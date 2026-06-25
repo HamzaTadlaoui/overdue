@@ -2,29 +2,34 @@
 
 A minimal CLI tracker that answers one question: *how long has it been since I last did X?*
 
-Log any habit, chore, or activity. `dayssince` persists the dates locally and tells you the elapsed time on demand.
+```
+Activity               Last done             Elapsed
+-------------------------------------------------------
+running                2026-06-22 08:15:00   3d 6h 16m 54s
+floss                  2026-06-18 21:00:00   6d 17h 31m 54s
+meditation             2026-06-25 09:00:00   5h 47m 12s
+```
 
 ---
 
 ## Requirements
 
-- C++20 compiler (GCC ≥ 11, Clang ≥ 13, MSVC 2022)
+- C++23 compiler (GCC ≥ 13, Clang ≥ 16)
 - CMake ≥ 3.20
-- [nlohmann/json](https://github.com/nlohmann/json) (bundled in `include/nlohmann/`)
 
-## Build
+Dependencies are fetched automatically by CMake (nlohmann/json).
+
+## Build & install
 
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build
+cmake --install build --prefix ~/.local
 ```
 
-The binary is placed at `build/dayssince`.
-
-Optionally install system-wide:
-
+Optional short alias — add to your `~/.bashrc`:
 ```bash
-sudo cmake --install build
+alias ds='dayssince'
 ```
 
 ---
@@ -33,55 +38,23 @@ sudo cmake --install build
 
 | Command | Description |
 |---|---|
-| `dayssince add <name>` | Start tracking a new activity (logged as today) |
-| `dayssince log <name>` | Record that you just did it (reset counter to 0) |
-| `dayssince list` | Show all activities with elapsed days |
-| `dayssince show <name>` | Show elapsed time for one activity |
+| `dayssince add <name>` | Start tracking a new activity |
+| `dayssince log <name>` | Mark as done right now |
+| `dayssince unlog <name>` | Cancel the last log |
+| `dayssince list` | Show all activities with elapsed time |
+| `dayssince show <name>` | Show one activity |
 | `dayssince delete <name>` | Stop tracking an activity |
 
----
-
-## Example session
-
-```
-$ dayssince add running
-✓ Now tracking "running" (last done: today)
-
-$ dayssince add floss
-✓ Now tracking "floss" (last done: today)
-
-$ dayssince list
- Activity   Last done    Days ago
- ─────────────────────────────────
- running    2026-06-25   0
- floss      2026-06-25   0
-
-# Three days later…
-
-$ dayssince list
- Activity   Last done    Days ago
- ─────────────────────────────────
- running    2026-06-25   3
- floss      2026-06-25   3
-
-$ dayssince log running
-✓ "running" updated (last done: today)
-
-$ dayssince show floss
-floss — last done 2026-06-25 (3 days ago)
-
-$ dayssince delete floss
-✓ "floss" removed.
-```
+Activity names can be multi-word without quotes: `dayssince add brush teeth`
 
 ---
 
-## Data storage
+## Data
 
-Activities are saved in `~/.local/share/dayssince/data.json` (Linux/macOS) or `%APPDATA%\dayssince\data.json` (Windows).
+All logs are stored in `~/.local/share/dayssince/data.json`. The full history is kept — every log entry is saved, which will be used for stats in future versions.
 
 ---
 
 ## License
 
-MIT
+MIT — made by [Hamza Tadlaoui](https://github.com/HamzaTadlaoui)
