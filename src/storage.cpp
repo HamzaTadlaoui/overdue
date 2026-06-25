@@ -49,5 +49,5 @@ void Storage::save(const std::filesystem::path& path, const std::vector<Activity
 std::filesystem::path Storage::default_path() {
     const char* home = std::getenv("HOME");
     if (!home) throw std::runtime_error("HOME environment variable not set");
-    return std::filesystem::path(home) / ".local/share/dayssince/data.json";
+    return std::filesystem::path(home) / ".local/share/overdue/data.json";
 }

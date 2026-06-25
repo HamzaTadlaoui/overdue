@@ -1,6 +1,6 @@
-# dayssince
+# overdue
 
-A minimal CLI tracker that answers one question: *how long has it been since I last did X?*
+A minimal CLI tracker that tells you how long it's been since you last did something — and makes you feel it.
 
 ```
 Activity               Last done             Elapsed
@@ -29,7 +29,7 @@ cmake --install build --prefix ~/.local
 
 Optional short alias — add to your `~/.bashrc`:
 ```bash
-alias ds='dayssince'
+alias od='overdue'
 ```
 
 ---
@@ -38,20 +38,20 @@ alias ds='dayssince'
 
 | Command | Description |
 |---|---|
-| `dayssince add <name>` | Start tracking a new activity |
-| `dayssince log <name>` | Mark as done right now |
-| `dayssince unlog <name>` | Cancel the last log |
-| `dayssince list` | Show all activities with elapsed time |
-| `dayssince show <name>` | Show one activity |
-| `dayssince delete <name>` | Stop tracking an activity |
+| `overdue add <name>` | Start tracking a new activity |
+| `overdue log <name>` | Mark as done right now |
+| `overdue unlog <name>` | Cancel the last log |
+| `overdue list` | Show all activities with elapsed time |
+| `overdue show <name>` | Show one activity |
+| `overdue delete <name>` | Stop tracking an activity |
 
-Activity names can be multi-word without quotes: `dayssince add brush teeth`
+Activity names can be multi-word without quotes: `overdue add brush teeth`
 
 ---
 
 ## Data
 
-All logs are stored in `~/.local/share/dayssince/data.json`. The full history is kept — every log entry is saved, which will be used for stats in future versions.
+All logs are stored in `~/.local/share/overdue/data.json`. The full history is kept — every log entry is saved, which will be used for stats and alerts in future versions.
 
 ---
 

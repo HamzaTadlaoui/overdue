@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(dayssince VERSION 0.1.0 LANGUAGES CXX)
+project(overdue VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -15,13 +15,13 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(nlohmann_json)
 
-add_executable(dayssince
+add_executable(overdue
     src/main.cpp
     src/tracker.cpp
     src/storage.cpp
 )
 
-target_include_directories(dayssince PRIVATE include)
-target_link_libraries(dayssince PRIVATE nlohmann_json::nlohmann_json)
+target_include_directories(overdue PRIVATE include)
+target_link_libraries(overdue PRIVATE nlohmann_json::nlohmann_json)
 
-install(TARGETS dayssince RUNTIME DESTINATION bin)
+install(TARGETS overdue RUNTIME DESTINATION bin)

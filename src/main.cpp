@@ -14,12 +14,12 @@ static std::string join_args(std::span<char*> args) {
 
 static void print_usage() {
     std::println("Usage:");
-    std::println("  dayssince add <name>     Start tracking an activity");
-    std::println("  dayssince log <name>     Mark as done now");
-    std::println("  dayssince unlog <name>   Cancel the last log");
-    std::println("  dayssince list           Show all activities");
-    std::println("  dayssince show <name>    Show one activity");
-    std::println("  dayssince delete <name>  Stop tracking an activity");
+    std::println("  overdue add <name>     Start tracking an activity");
+    std::println("  overdue log <name>     Mark as done now");
+    std::println("  overdue unlog <name>   Cancel the last log");
+    std::println("  overdue list           Show all activities");
+    std::println("  overdue show <name>    Show one activity");
+    std::println("  overdue delete <name>  Stop tracking an activity");
 }
 
 int main(int argc, char* argv[]) {
@@ -30,7 +30,7 @@ int main(int argc, char* argv[]) {
         std::string cmd = argv[1];
 
         if (cmd == "add") {
-            if (argc < 3) { std::println(stderr, "Usage: dayssince add <name>"); return 1; }
+            if (argc < 3) { std::println(stderr, "Usage: overdue add <name>"); return 1; }
             auto name = join_args(std::span(argv + 2, argc - 2));
             if (!tracker.add(name))
                 std::println(stderr, "\"{}\" is already being tracked.", name);
@@ -38,7 +38,7 @@ int main(int argc, char* argv[]) {
                 std::println("✓ Now tracking \"{}\"", name);
         }
         else if (cmd == "log") {
-            if (argc < 3) { std::println(stderr, "Usage: dayssince log <name>"); return 1; }
+            if (argc < 3) { std::println(stderr, "Usage: overdue log <name>"); return 1; }
             auto name = join_args(std::span(argv + 2, argc - 2));
             if (!tracker.log(name))
                 std::println(stderr, "\"{}\" not found.", name);
@@ -46,7 +46,7 @@ int main(int argc, char* argv[]) {
                 std::println("✓ \"{}\" logged now.", name);
         }
         else if (cmd == "unlog") {
-            if (argc < 3) { std::println(stderr, "Usage: dayssince unlog <name>"); return 1; }
+            if (argc < 3) { std::println(stderr, "Usage: overdue unlog <name>"); return 1; }
             auto name = join_args(std::span(argv + 2, argc - 2));
             if (!tracker.unlog(name))
                 std::println(stderr, "\"{}\" not found or no previous log to restore.", name);
@@ -56,7 +56,7 @@ int main(int argc, char* argv[]) {
         else if (cmd == "list") {
             auto activities = tracker.list();
             if (activities.empty()) {
-                std::println("No activities tracked. Use 'dayssince add <name>' to start.");
+                std::println("No activities tracked. Use 'overdue add <name>' to start.");
                 return 0;
             }
             std::println("{:<22} {:<21} {}", "Activity", "Last done", "Elapsed");
@@ -65,14 +65,14 @@ int main(int argc, char* argv[]) {
                 std::println("{:<22} {:<21} {}", a.name, format_datetime(last_done(a)), format_elapsed(last_done(a)));
         }
         else if (cmd == "show") {
-            if (argc < 3) { std::println(stderr, "Usage: dayssince show <name>"); return 1; }
+            if (argc < 3) { std::println(stderr, "Usage: overdue show <name>"); return 1; }
             auto name = join_args(std::span(argv + 2, argc - 2));
             auto a = tracker.find(name);
             if (!a) { std::println(stderr, "\"{}\" not found.", name); return 1; }
             std::println("{} — last done {} ({})", a->name, format_datetime(last_done(*a)), format_elapsed(last_done(*a)));
         }
         else if (cmd == "delete") {
-            if (argc < 3) { std::println(stderr, "Usage: dayssince delete <name>"); return 1; }
+            if (argc < 3) { std::println(stderr, "Usage: overdue delete <name>"); return 1; }
             auto name = join_args(std::span(argv + 2, argc - 2));
             if (!tracker.remove(name))
                 std::println(stderr, "\"{}\" not found.", name);
