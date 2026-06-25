@@ -1,0 +1,6 @@
+[Unit]
+Description=Check overdue activities and send notifications
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/overdue check

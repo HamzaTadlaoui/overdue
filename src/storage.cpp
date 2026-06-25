@@ -25,6 +25,8 @@ std::vector<Activity> Storage::load(const std::filesystem::path& path) {
         a.name = item["name"].get<std::string>();
         for (auto unix : item["logs"])
             a.logs.push_back(from_unix(unix.get<long long>()));
+        if (item.contains("alert_after"))
+            a.alert_after = item["alert_after"].get<long long>();
         result.push_back(std::move(a));
     }
     return result;
@@ -38,7 +40,10 @@ void Storage::save(const std::filesystem::path& path, const std::vector<Activity
         json logs = json::array();
         for (const auto& tp : a.logs)
             logs.push_back(to_unix(tp));
-        j.push_back({{"name", a.name}, {"logs", logs}});
+        json entry = {{"name", a.name}, {"logs", logs}};
+        if (a.alert_after)
+            entry["alert_after"] = *a.alert_after;
+        j.push_back(entry);
     }
 
     std::ofstream f(path);

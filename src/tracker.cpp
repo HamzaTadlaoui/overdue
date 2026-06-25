@@ -6,15 +6,16 @@ Tracker::Tracker(std::filesystem::path data_path)
 
 bool Tracker::add(const std::string& name) {
     if (find(name)) return false;
-    activities_.push_back({name, {now()}});
+    activities_.push_back({name, {now()}, std::nullopt});
     save();
     return true;
 }
 
-bool Tracker::log(const std::string& name) {
+bool Tracker::log(const std::string& name, std::optional<std::chrono::system_clock::time_point> when) {
     auto it = std::ranges::find_if(activities_, [&](const Activity& a) { return a.name == name; });
     if (it == activities_.end()) return false;
-    it->logs.push_back(now());
+    it->logs.push_back(when.value_or(now()));
+    std::ranges::sort(it->logs);
     save();
     return true;
 }
@@ -36,7 +37,34 @@ bool Tracker::remove(const std::string& name) {
     return true;
 }
 
+bool Tracker::setalarm(const std::string& name, long long seconds) {
+    auto it = std::ranges::find_if(activities_, [&](const Activity& a) { return a.name == name; });
+    if (it == activities_.end()) return false;
+    it->alert_after = seconds;
+    save();
+    return true;
+}
+
+bool Tracker::delalarm(const std::string& name) {
+    auto it = std::ranges::find_if(activities_, [&](const Activity& a) { return a.name == name; });
+    if (it == activities_.end()) return false;
+    it->alert_after = std::nullopt;
+    save();
+    return true;
+}
+
 std::vector<Activity> Tracker::list() const { return activities_; }
+
+std::vector<Activity> Tracker::overdue_activities() const {
+    std::vector<Activity> result;
+    for (const auto& a : activities_) {
+        if (!a.alert_after) continue;
+        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now() - last_done(a)).count();
+        if (elapsed >= *a.alert_after)
+            result.push_back(a);
+    }
+    return result;
+}
 
 std::optional<Activity> Tracker::find(const std::string& name) const {
     auto it = std::ranges::find_if(activities_, [&](const Activity& a) { return a.name == name; });
