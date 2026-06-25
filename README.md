@@ -82,6 +82,12 @@ All logs are stored in `~/.local/share/overdue/data.json`. Every log entry is pr
 
 ---
 
+## Inspiration
+
+Inspired by [Better Counter](https://f-droid.org/packages/org.kde.bettercounter/) — an open source Android app by KDE.
+
+---
+
 ## License
 
 MIT — made by [Hamza Tadlaoui](https://github.com/HamzaTadlaoui)
