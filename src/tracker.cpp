@@ -62,7 +62,7 @@ bool Tracker::remove(const std::string& name) {
 
 bool Tracker::setstreak(const std::string& name, StreakConfig sc) {
     auto it = std::ranges::find_if(activities_, [&](const Activity& a) { return a.name == name; });
-    if (it == activities_.end()) return false;
+    if (it == activities_.end() || it->type != ActivityType::Habit) return false;
     it->streak = sc;
     save();
     return true;
