@@ -50,17 +50,20 @@ Requires `notify-send` (included in most GNOME/KDE setups).
 
 | Command | Description |
 |---|---|
-| `overdue add <name>` | Start tracking a new activity |
-| `overdue log <name>` | Mark as done right now |
+| `overdue add <name>` | Track a recurring habit |
+| `overdue addtask <name>` | Add a one-time task |
+| `overdue log <name>` | Mark habit as done right now |
 | `overdue log <name> --ago <dur>` | Mark as done X time ago |
 | `overdue log <name> --at <datetime>` | Mark as done at a specific date/time |
 | `overdue unlog <name>` | Cancel the last log |
-| `overdue list` | Show all activities with elapsed time and alarms |
-| `overdue show <name>` | Show details for one activity |
-| `overdue delete <name>` | Stop tracking an activity |
+| `overdue done <name>` | Mark a task as completed (archives it) |
+| `overdue list` | Show habits and active tasks |
+| `overdue list --done` | Also show completed tasks |
+| `overdue show <name>` | Show details for one entry |
+| `overdue delete <name>` | Remove an entry |
 | `overdue setalarm <name> <dur>` | Alert after this much time without logging |
 | `overdue delalarm <name>` | Remove the alert |
-| `overdue check` | Send desktop notifications for all overdue activities |
+| `overdue check` | Send desktop notifications for all overdue habits |
 
 Activity names can be multi-word without quotes: `overdue add brush teeth`
 

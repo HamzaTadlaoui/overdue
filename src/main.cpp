@@ -20,15 +20,20 @@ static void notify(const std::string& title, const std::string& body) {
 
 static void print_usage() {
     std::println("Usage:");
-    std::println("  overdue add <name>              Start tracking an activity");
-    std::println("  overdue log <name>              Mark as done now");
+    std::println("  overdue add <name>              Track a recurring habit");
+    std::println("  overdue addtask <name>          Add a one-time task");
+    std::println("  overdue log <name>              Mark habit as done now");
+    std::println("  overdue log <name> --ago <dur>  Mark as done X time ago (2h, 1d6h...)");
+    std::println("  overdue log <name> --at <date>  Mark as done at date (2026-06-22T08:15)");
     std::println("  overdue unlog <name>            Cancel the last log");
-    std::println("  overdue list                    Show all activities");
-    std::println("  overdue show <name>             Show one activity");
-    std::println("  overdue delete <name>           Stop tracking an activity");
-    std::println("  overdue setalarm <name> <dur>   Set alert threshold (e.g. 3d, 12h, 1d6h)");
+    std::println("  overdue done <name>             Mark a task as completed");
+    std::println("  overdue list                    Show habits and active tasks");
+    std::println("  overdue list --done             Also show completed tasks");
+    std::println("  overdue show <name>             Show details for one entry");
+    std::println("  overdue delete <name>           Remove an entry");
+    std::println("  overdue setalarm <name> <dur>   Alert after this long without logging");
     std::println("  overdue delalarm <name>         Remove alert");
-    std::println("  overdue check                   Send notifications for overdue activities");
+    std::println("  overdue check                   Send notifications for overdue habits");
 }
 
 int main(int argc, char* argv[]) {
@@ -45,6 +50,14 @@ int main(int argc, char* argv[]) {
                 std::println(stderr, "\"{}\" is already being tracked.", name);
             else
                 std::println("✓ Now tracking \"{}\"", name);
+        }
+        else if (cmd == "addtask") {
+            if (argc < 3) { std::println(stderr, "Usage: overdue addtask <name>"); return 1; }
+            auto name = join_args(std::span(argv + 2, argc - 2));
+            if (!tracker.addtask(name))
+                std::println(stderr, "\"{}\" already exists.", name);
+            else
+                std::println("✓ Task \"{}\" added.", name);
         }
         else if (cmd == "log") {
             if (argc < 3) { std::println(stderr, "Usage: overdue log <name> [--ago <dur> | --at <date>]"); return 1; }
@@ -88,18 +101,52 @@ int main(int argc, char* argv[]) {
             else
                 std::println("✓ Last log for \"{}\" cancelled.", name);
         }
+        else if (cmd == "done") {
+            if (argc < 3) { std::println(stderr, "Usage: overdue done <name>"); return 1; }
+            auto name = join_args(std::span(argv + 2, argc - 2));
+            if (!tracker.done(name))
+                std::println(stderr, "\"{}\" not found or is not a task.", name);
+            else
+                std::println("✓ \"{}\" completed.", name);
+        }
         else if (cmd == "list") {
-            auto activities = tracker.list();
-            if (activities.empty()) {
-                std::println("No activities tracked. Use 'overdue add <name>' to start.");
+            bool show_done = (argc >= 3 && std::string(argv[2]) == "--done");
+
+            auto habits = tracker.habits();
+            auto tasks  = tracker.tasks(show_done);
+
+            if (habits.empty() && tasks.empty()) {
+                std::println("Nothing tracked. Use 'overdue add <name>' or 'overdue addtask <name>'.");
                 return 0;
             }
-            std::println("{:<22} {:<21} {:<16} {}", "Activity", "Last done", "Elapsed", "Alarm");
-            std::println("{}", std::string(68, '-'));
-            for (const auto& a : activities) {
-                auto alarm = a.alert_after ? format_duration(*a.alert_after) : "-";
-                std::println("{:<22} {:<21} {:<16} {}", a.name,
-                    format_datetime(last_done(a)), format_elapsed(last_done(a)), alarm);
+
+            if (!habits.empty()) {
+                std::println("Habits");
+                std::println("{:<22} {:<21} {:<16} {}", "Activity", "Last done", "Elapsed", "Alarm");
+                std::println("{}", std::string(68, '-'));
+                for (const auto& a : habits) {
+                    auto alarm = a.alert_after ? format_duration(*a.alert_after) : "-";
+                    std::println("{:<22} {:<21} {:<16} {}", a.name,
+                        format_datetime(last_done(a)), format_elapsed(last_done(a)), alarm);
+                }
+            }
+
+            if (!tasks.empty()) {
+                if (!habits.empty()) std::println("");
+                std::println("Tasks");
+                std::println("{:<22} {:<21} {}", "Task", "Added", "Pending for");
+                std::println("{}", std::string(60, '-'));
+                for (const auto& a : tasks) {
+                    if (a.completed_at) {
+                        std::println("{:<22} {:<21} ✓ done ({})", a.name,
+                            format_datetime(a.logs.front()),
+                            format_datetime(*a.completed_at));
+                    } else {
+                        std::println("{:<22} {:<21} {}", a.name,
+                            format_datetime(a.logs.front()),
+                            format_elapsed(a.logs.front()));
+                    }
+                }
             }
         }
         else if (cmd == "show") {
@@ -107,11 +154,19 @@ int main(int argc, char* argv[]) {
             auto name = join_args(std::span(argv + 2, argc - 2));
             auto a = tracker.find(name);
             if (!a) { std::println(stderr, "\"{}\" not found.", name); return 1; }
-            std::println("{} — last done {} ({})", a->name,
-                format_datetime(last_done(*a)), format_elapsed(last_done(*a)));
-            if (a->alert_after)
-                std::println("  alarm: after {}", format_duration(*a->alert_after));
-            std::println("  total logs: {}", a->logs.size());
+            if (a->type == ActivityType::Task) {
+                std::println("{} [task] — added {}", a->name, format_datetime(a->logs.front()));
+                if (a->completed_at)
+                    std::println("  completed: {}", format_datetime(*a->completed_at));
+                else
+                    std::println("  pending for: {}", format_elapsed(a->logs.front()));
+            } else {
+                std::println("{} — last done {} ({})", a->name,
+                    format_datetime(last_done(*a)), format_elapsed(last_done(*a)));
+                if (a->alert_after)
+                    std::println("  alarm: after {}", format_duration(*a->alert_after));
+                std::println("  total logs: {}", a->logs.size());
+            }
         }
         else if (cmd == "delete") {
             if (argc < 3) { std::println(stderr, "Usage: overdue delete <name>"); return 1; }
@@ -122,7 +177,6 @@ int main(int argc, char* argv[]) {
                 std::println("✓ \"{}\" removed.", name);
         }
         else if (cmd == "setalarm") {
-            // last arg is the duration, everything in between is the name
             if (argc < 4) { std::println(stderr, "Usage: overdue setalarm <name> <duration>"); return 1; }
             std::string dur_str = argv[argc - 1];
             auto dur = parse_duration(dur_str);

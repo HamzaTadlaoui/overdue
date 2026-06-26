@@ -4,10 +4,14 @@
 #include <string>
 #include <vector>
 
+enum class ActivityType { Habit, Task };
+
 struct Activity {
     std::string name;
+    ActivityType type = ActivityType::Habit;
     std::vector<std::chrono::system_clock::time_point> logs;
-    std::optional<long long> alert_after; // seconds
+    std::optional<std::chrono::system_clock::time_point> completed_at;
+    std::optional<long long> alert_after; // seconds, habits only
 };
 
 inline std::chrono::system_clock::time_point now() {

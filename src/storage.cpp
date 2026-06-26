@@ -23,8 +23,11 @@ std::vector<Activity> Storage::load(const std::filesystem::path& path) {
     for (const auto& item : json::parse(f)) {
         Activity a;
         a.name = item["name"].get<std::string>();
+        a.type = (item.value("type", "habit") == "task") ? ActivityType::Task : ActivityType::Habit;
         for (auto unix : item["logs"])
             a.logs.push_back(from_unix(unix.get<long long>()));
+        if (item.contains("completed_at"))
+            a.completed_at = from_unix(item["completed_at"].get<long long>());
         if (item.contains("alert_after"))
             a.alert_after = item["alert_after"].get<long long>();
         result.push_back(std::move(a));
@@ -40,7 +43,13 @@ void Storage::save(const std::filesystem::path& path, const std::vector<Activity
         json logs = json::array();
         for (const auto& tp : a.logs)
             logs.push_back(to_unix(tp));
-        json entry = {{"name", a.name}, {"logs", logs}};
+        json entry = {
+            {"name", a.name},
+            {"type", a.type == ActivityType::Task ? "task" : "habit"},
+            {"logs", logs}
+        };
+        if (a.completed_at)
+            entry["completed_at"] = to_unix(*a.completed_at);
         if (a.alert_after)
             entry["alert_after"] = *a.alert_after;
         j.push_back(entry);

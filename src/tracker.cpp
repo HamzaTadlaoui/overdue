@@ -6,7 +6,22 @@ Tracker::Tracker(std::filesystem::path data_path)
 
 bool Tracker::add(const std::string& name) {
     if (find(name)) return false;
-    activities_.push_back({name, {now()}, std::nullopt});
+    activities_.push_back({name, ActivityType::Habit, {now()}, std::nullopt, std::nullopt});
+    save();
+    return true;
+}
+
+bool Tracker::addtask(const std::string& name) {
+    if (find(name)) return false;
+    activities_.push_back({name, ActivityType::Task, {now()}, std::nullopt, std::nullopt});
+    save();
+    return true;
+}
+
+bool Tracker::done(const std::string& name) {
+    auto it = std::ranges::find_if(activities_, [&](const Activity& a) { return a.name == name; });
+    if (it == activities_.end() || it->type != ActivityType::Task) return false;
+    it->completed_at = now();
     save();
     return true;
 }
@@ -53,7 +68,20 @@ bool Tracker::delalarm(const std::string& name) {
     return true;
 }
 
-std::vector<Activity> Tracker::list() const { return activities_; }
+std::vector<Activity> Tracker::habits() const {
+    std::vector<Activity> result;
+    for (const auto& a : activities_)
+        if (a.type == ActivityType::Habit) result.push_back(a);
+    return result;
+}
+
+std::vector<Activity> Tracker::tasks(bool include_done) const {
+    std::vector<Activity> result;
+    for (const auto& a : activities_)
+        if (a.type == ActivityType::Task && (include_done || !a.completed_at))
+            result.push_back(a);
+    return result;
+}
 
 std::vector<Activity> Tracker::overdue_activities() const {
     std::vector<Activity> result;
