@@ -14,7 +14,7 @@ meditation             2026-06-25 09:00:00   5h 47m 12s        -
 
 ## Requirements
 
-- C++23 compiler (GCC ≥ 13, Clang ≥ 16)
+- C++23 compiler (GCC ≥ 14, Clang ≥ 17)
 - CMake ≥ 3.20
 
 Dependencies are fetched automatically by CMake ([nlohmann/json](https://github.com/nlohmann/json)).

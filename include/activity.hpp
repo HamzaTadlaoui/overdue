@@ -6,12 +6,22 @@
 
 enum class ActivityType { Habit, Task };
 
+enum class StreakMode { Interval, Calendar };
+enum class CalendarUnit { Day, Week, Month };
+
+struct StreakConfig {
+    StreakMode mode;
+    long long interval_secs = 0;
+    CalendarUnit unit = CalendarUnit::Day;
+};
+
 struct Activity {
     std::string name;
     ActivityType type = ActivityType::Habit;
     std::vector<std::chrono::system_clock::time_point> logs;
     std::optional<std::chrono::system_clock::time_point> completed_at;
-    std::optional<long long> alert_after; // seconds, habits only
+    std::optional<long long> alert_after;
+    std::optional<StreakConfig> streak;
 };
 
 inline std::chrono::system_clock::time_point now() {
@@ -23,9 +33,10 @@ inline const std::chrono::system_clock::time_point& last_done(const Activity& a)
 }
 
 inline std::string format_datetime(const std::chrono::system_clock::time_point& tp) {
-    auto dp = std::chrono::floor<std::chrono::days>(tp);
+    auto local = std::chrono::current_zone()->to_local(tp);
+    auto dp    = std::chrono::floor<std::chrono::days>(local);
     std::chrono::year_month_day ymd{dp};
-    std::chrono::hh_mm_ss hms{std::chrono::duration_cast<std::chrono::seconds>(tp - dp)};
+    std::chrono::hh_mm_ss hms{std::chrono::duration_cast<std::chrono::seconds>(local - dp)};
     return std::format("{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}",
         static_cast<int>(ymd.year()),
         static_cast<unsigned>(ymd.month()),
@@ -49,7 +60,7 @@ inline std::string format_elapsed(const std::chrono::system_clock::time_point& l
     return std::format("{}s", s);
 }
 
-// Parses "2026-06-22" or "2026-06-22T08:15" or "2026-06-22T08:15:00"
+// Parses "2026-06-22" or "2026-06-22T08:15" or "2026-06-22T08:15:00" as local time
 inline std::optional<std::chrono::system_clock::time_point> parse_at(const std::string& s) {
     if (s.size() < 10) return std::nullopt;
     try {
@@ -58,14 +69,15 @@ inline std::optional<std::chrono::system_clock::time_point> parse_at(const std::
         unsigned d = std::stoi(s.substr(8, 2));
         std::chrono::year_month_day ymd{std::chrono::year{y}, std::chrono::month{mo}, std::chrono::day{d}};
         if (!ymd.ok()) return std::nullopt;
-        std::chrono::system_clock::time_point tp = std::chrono::sys_days{ymd};
+        auto local = std::chrono::local_days{ymd};
+        std::chrono::local_seconds local_sec{local};
         if (s.size() >= 16) {
-            long long h = std::stoi(s.substr(11, 2));
-            long long m = std::stoi(s.substr(14, 2));
+            long long h   = std::stoi(s.substr(11, 2));
+            long long m   = std::stoi(s.substr(14, 2));
             long long sec = (s.size() >= 19) ? std::stoi(s.substr(17, 2)) : 0;
-            tp += std::chrono::hours{h} + std::chrono::minutes{m} + std::chrono::seconds{sec};
+            local_sec += std::chrono::hours{h} + std::chrono::minutes{m} + std::chrono::seconds{sec};
         }
-        return tp;
+        return std::chrono::current_zone()->to_sys(local_sec);
     } catch (...) { return std::nullopt; }
 }
 
@@ -101,4 +113,25 @@ inline std::string format_duration(long long seconds) {
     if (h > 0)           return std::format("{}h", h);
     if (m > 0)           return std::format("{}m", m);
     return std::format("{}s", s);
+}
+
+// "daily"/"weekly"/"monthly" → calendar; "3d"/"12h"/… → interval
+inline std::optional<StreakConfig> parse_streak(const std::string& s) {
+    if (s == "daily")   return StreakConfig{StreakMode::Calendar, 0, CalendarUnit::Day};
+    if (s == "weekly")  return StreakConfig{StreakMode::Calendar, 0, CalendarUnit::Week};
+    if (s == "monthly") return StreakConfig{StreakMode::Calendar, 0, CalendarUnit::Month};
+    auto dur = parse_duration(s);
+    if (!dur) return std::nullopt;
+    return StreakConfig{StreakMode::Interval, *dur, CalendarUnit::Day};
+}
+
+inline std::string format_streak_label(const StreakConfig& sc) {
+    if (sc.mode == StreakMode::Calendar) {
+        switch (sc.unit) {
+            case CalendarUnit::Day:   return "daily";
+            case CalendarUnit::Week:  return "weekly";
+            case CalendarUnit::Month: return "monthly";
+        }
+    }
+    return format_duration(sc.interval_secs);
 }

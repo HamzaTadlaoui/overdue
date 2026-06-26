@@ -1,8 +1,10 @@
 #include "tracker.hpp"
-#include <cstdlib>
+#include "stats.hpp"
 #include <iostream>
 #include <print>
 #include <span>
+#include <sys/wait.h>
+#include <unistd.h>
 
 static std::string join_args(std::span<char*> args) {
     std::string result;
@@ -14,8 +16,14 @@ static std::string join_args(std::span<char*> args) {
 }
 
 static void notify(const std::string& title, const std::string& body) {
-    auto cmd = std::format("notify-send --urgency=normal '{}' '{}'", title, body);
-    std::system(cmd.c_str());
+    pid_t pid = fork();
+    if (pid == 0) {
+        execlp("notify-send", "notify-send", "--urgency=normal",
+               title.c_str(), body.c_str(), nullptr);
+        _exit(127);
+    } else if (pid > 0) {
+        waitpid(pid, nullptr, 0);
+    }
 }
 
 static void print_usage() {
@@ -34,6 +42,9 @@ static void print_usage() {
     std::println("  overdue setalarm <name> <dur>   Alert after this long without logging");
     std::println("  overdue delalarm <name>         Remove alert");
     std::println("  overdue check                   Send notifications for overdue habits");
+    std::println("  overdue setstreak <name> <s>    Set streak (daily/weekly/monthly/3d...)");
+    std::println("  overdue delstreak <name>        Remove streak tracking");
+    std::println("  overdue stats                   Show global stats");
 }
 
 int main(int argc, char* argv[]) {
@@ -44,9 +55,30 @@ int main(int argc, char* argv[]) {
         std::string cmd = argv[1];
 
         if (cmd == "add") {
-            if (argc < 3) { std::println(stderr, "Usage: overdue add <name>"); return 1; }
-            auto name = join_args(std::span(argv + 2, argc - 2));
-            if (!tracker.add(name))
+            if (argc < 3) { std::println(stderr, "Usage: overdue add <name> [--alarm <dur>] [--streak daily|weekly|monthly|<dur>]"); return 1; }
+
+            std::optional<long long> alarm;
+            std::optional<StreakConfig> streak;
+            std::vector<std::string> name_parts;
+
+            for (int i = 2; i < argc; ++i) {
+                std::string arg = argv[i];
+                if (arg == "--alarm" && i + 1 < argc) {
+                    auto dur = parse_duration(argv[++i]);
+                    if (!dur) { std::println(stderr, "Invalid alarm duration."); return 1; }
+                    alarm = dur;
+                } else if (arg == "--streak" && i + 1 < argc) {
+                    streak = parse_streak(argv[++i]);
+                    if (!streak) { std::println(stderr, "Invalid streak. Examples: daily, weekly, monthly, 3d, 12h"); return 1; }
+                } else {
+                    name_parts.push_back(arg);
+                }
+            }
+            if (name_parts.empty()) { std::println(stderr, "Missing activity name."); return 1; }
+            std::string name;
+            for (const auto& p : name_parts) { if (!name.empty()) name += ' '; name += p; }
+
+            if (!tracker.add(name, alarm, streak))
                 std::println(stderr, "\"{}\" is already being tracked.", name);
             else
                 std::println("✓ Now tracking \"{}\"", name);
@@ -83,6 +115,9 @@ int main(int argc, char* argv[]) {
             }
 
             if (name_parts.empty()) { std::println(stderr, "Missing activity name."); return 1; }
+            if (when && *when > now()) {
+                std::println(stderr, "Cannot log a future date."); return 1;
+            }
             std::string name;
             for (const auto& p : name_parts) { if (!name.empty()) name += ' '; name += p; }
 
@@ -109,6 +144,25 @@ int main(int argc, char* argv[]) {
             else
                 std::println("✓ \"{}\" completed.", name);
         }
+        else if (cmd == "setstreak") {
+            if (argc < 4) { std::println(stderr, "Usage: overdue setstreak <name> <daily|weekly|monthly|dur>"); return 1; }
+            std::string s_str = argv[argc - 1];
+            auto sc = parse_streak(s_str);
+            if (!sc) { std::println(stderr, "Invalid streak \"{}\". Examples: daily, weekly, monthly, 3d", s_str); return 1; }
+            auto name = join_args(std::span(argv + 2, argc - 3));
+            if (!tracker.setstreak(name, *sc))
+                std::println(stderr, "\"{}\" not found.", name);
+            else
+                std::println("✓ Streak set for \"{}\" ({})", name, format_streak_label(*sc));
+        }
+        else if (cmd == "delstreak") {
+            if (argc < 3) { std::println(stderr, "Usage: overdue delstreak <name>"); return 1; }
+            auto name = join_args(std::span(argv + 2, argc - 2));
+            if (!tracker.delstreak(name))
+                std::println(stderr, "\"{}\" not found.", name);
+            else
+                std::println("✓ Streak removed for \"{}\"", name);
+        }
         else if (cmd == "list") {
             bool show_done = (argc >= 3 && std::string(argv[2]) == "--done");
 
@@ -122,12 +176,17 @@ int main(int argc, char* argv[]) {
 
             if (!habits.empty()) {
                 std::println("Habits");
-                std::println("{:<22} {:<21} {:<16} {}", "Activity", "Last done", "Elapsed", "Alarm");
-                std::println("{}", std::string(68, '-'));
+                std::println("{:<22} {:<21} {:<16} {:<8} {}", "Activity", "Last done", "Elapsed", "Alarm", "Streak");
+                std::println("{}", std::string(76, '-'));
                 for (const auto& a : habits) {
                     auto alarm = a.alert_after ? format_duration(*a.alert_after) : "-";
-                    std::println("{:<22} {:<21} {:<16} {}", a.name,
-                        format_datetime(last_done(a)), format_elapsed(last_done(a)), alarm);
+                    std::string streak_col = "-";
+                    if (a.streak) {
+                        int s = compute_streak(a);
+                        streak_col = std::format("{} ({})", s, format_streak_label(*a.streak));
+                    }
+                    std::println("{:<22} {:<21} {:<16} {:<8} {}", a.name,
+                        format_datetime(last_done(a)), format_elapsed(last_done(a)), alarm, streak_col);
                 }
             }
 
@@ -164,7 +223,11 @@ int main(int argc, char* argv[]) {
                 std::println("{} — last done {} ({})", a->name,
                     format_datetime(last_done(*a)), format_elapsed(last_done(*a)));
                 if (a->alert_after)
-                    std::println("  alarm: after {}", format_duration(*a->alert_after));
+                    std::println("  alarm:  after {}", format_duration(*a->alert_after));
+                if (a->streak)
+                    std::println("  streak: {} {} ({})", compute_streak(*a),
+                        compute_streak(*a) > 1 ? "in a row" : "",
+                        format_streak_label(*a->streak));
                 std::println("  total logs: {}", a->logs.size());
             }
         }
@@ -206,6 +269,43 @@ int main(int argc, char* argv[]) {
                 auto threshold = format_duration(*a.alert_after);
                 notify(std::format("overdue: {}", a.name),
                        std::format("{} since last done (alarm: {})", elapsed, threshold));
+            }
+        }
+        else if (cmd == "stats") {
+            auto gs = compute_global(tracker.all());
+
+            std::println("Global stats");
+            std::println("{}", std::string(40, '-'));
+
+            if (gs.habit_count > 0)
+                std::println("  Habits:  {}    {} logs total", gs.habit_count, gs.total_logs);
+            else
+                std::println("  Habits:  none");
+
+            if (gs.task_total > 0)
+                std::println("  Tasks:   {} done / {} total", gs.task_done, gs.task_total);
+            else
+                std::println("  Tasks:   none");
+
+            if (gs.most_consistent) {
+                auto& h = *gs.most_consistent;
+                auto avg = h.avg_interval ? std::format("avg every {}", format_duration(*h.avg_interval)) : "only 1 log";
+                std::println("  Most consistent:  {:<20} {}", h.name, avg);
+            }
+            if (gs.most_neglected) {
+                auto& h = *gs.most_neglected;
+                auto avg = h.avg_interval ? std::format("avg every {}", format_duration(*h.avg_interval)) : "only 1 log";
+                auto alarm = h.alert_after ? std::format("  ← alarm: {}", format_duration(*h.alert_after)) : "";
+                std::println("  Most neglected:   {:<20} {}{}", h.name, avg, alarm);
+            }
+            if (gs.most_logged) {
+                auto& h = *gs.most_logged;
+                std::println("  Most logged:      {:<20} {} logs", h.name, h.log_count);
+            }
+            if (gs.best_streak && gs.best_streak->streak > 0) {
+                auto& h = *gs.best_streak;
+                std::println("  Best streak:      {:<20} {} ({})", h.name, h.streak,
+                    format_streak_label(*h.streak_config));
             }
         }
         else {

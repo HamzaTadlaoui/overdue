@@ -26,10 +26,25 @@ std::vector<Activity> Storage::load(const std::filesystem::path& path) {
         a.type = (item.value("type", "habit") == "task") ? ActivityType::Task : ActivityType::Habit;
         for (auto unix : item["logs"])
             a.logs.push_back(from_unix(unix.get<long long>()));
+        if (a.logs.empty())
+            throw std::runtime_error("Activity \"" + a.name + "\" has no logs — data may be corrupted");
         if (item.contains("completed_at"))
             a.completed_at = from_unix(item["completed_at"].get<long long>());
         if (item.contains("alert_after"))
             a.alert_after = item["alert_after"].get<long long>();
+        if (item.contains("streak")) {
+            const auto& s = item["streak"];
+            std::string mode = s["mode"].get<std::string>();
+            if (mode == "interval") {
+                a.streak = StreakConfig{StreakMode::Interval, s["secs"].get<long long>()};
+            } else {
+                std::string unit = s["unit"].get<std::string>();
+                CalendarUnit cu = unit == "week" ? CalendarUnit::Week
+                                : unit == "month" ? CalendarUnit::Month
+                                : CalendarUnit::Day;
+                a.streak = StreakConfig{StreakMode::Calendar, 0, cu};
+            }
+        }
         result.push_back(std::move(a));
     }
     return result;
@@ -52,12 +67,28 @@ void Storage::save(const std::filesystem::path& path, const std::vector<Activity
             entry["completed_at"] = to_unix(*a.completed_at);
         if (a.alert_after)
             entry["alert_after"] = *a.alert_after;
+        if (a.streak) {
+            if (a.streak->mode == StreakMode::Interval) {
+                entry["streak"] = {{"mode", "interval"}, {"secs", a.streak->interval_secs}};
+            } else {
+                std::string unit = a.streak->unit == CalendarUnit::Week ? "week"
+                                 : a.streak->unit == CalendarUnit::Month ? "month"
+                                 : "day";
+                entry["streak"] = {{"mode", "calendar"}, {"unit", unit}};
+            }
+        }
         j.push_back(entry);
     }
 
-    std::ofstream f(path);
-    if (!f) throw std::runtime_error("Cannot write " + path.string());
-    f << j.dump(2) << '\n';
+    auto tmp = path;
+    tmp += ".tmp";
+    {
+        std::ofstream f(tmp);
+        if (!f) throw std::runtime_error("Cannot write " + tmp.string());
+        f << j.dump(2) << '\n';
+        if (!f) throw std::runtime_error("Write failed: " + tmp.string());
+    }
+    std::filesystem::rename(tmp, path);
 }
 
 std::filesystem::path Storage::default_path() {

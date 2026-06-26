@@ -4,9 +4,17 @@
 Tracker::Tracker(std::filesystem::path data_path)
     : path_(std::move(data_path)), activities_(Storage::load(path_)) {}
 
-bool Tracker::add(const std::string& name) {
+bool Tracker::add(const std::string& name,
+                  std::optional<long long> alarm,
+                  std::optional<StreakConfig> streak) {
     if (find(name)) return false;
-    activities_.push_back({name, ActivityType::Habit, {now()}, std::nullopt, std::nullopt});
+    Activity a;
+    a.name = name;
+    a.type = ActivityType::Habit;
+    a.logs = {now()};
+    a.alert_after = alarm;
+    a.streak = streak;
+    activities_.push_back(std::move(a));
     save();
     return true;
 }
@@ -52,9 +60,25 @@ bool Tracker::remove(const std::string& name) {
     return true;
 }
 
-bool Tracker::setalarm(const std::string& name, long long seconds) {
+bool Tracker::setstreak(const std::string& name, StreakConfig sc) {
     auto it = std::ranges::find_if(activities_, [&](const Activity& a) { return a.name == name; });
     if (it == activities_.end()) return false;
+    it->streak = sc;
+    save();
+    return true;
+}
+
+bool Tracker::delstreak(const std::string& name) {
+    auto it = std::ranges::find_if(activities_, [&](const Activity& a) { return a.name == name; });
+    if (it == activities_.end()) return false;
+    it->streak = std::nullopt;
+    save();
+    return true;
+}
+
+bool Tracker::setalarm(const std::string& name, long long seconds) {
+    auto it = std::ranges::find_if(activities_, [&](const Activity& a) { return a.name == name; });
+    if (it == activities_.end() || it->type != ActivityType::Habit) return false;
     it->alert_after = seconds;
     save();
     return true;
@@ -67,6 +91,8 @@ bool Tracker::delalarm(const std::string& name) {
     save();
     return true;
 }
+
+const std::vector<Activity>& Tracker::all() const { return activities_; }
 
 std::vector<Activity> Tracker::habits() const {
     std::vector<Activity> result;
@@ -86,7 +112,7 @@ std::vector<Activity> Tracker::tasks(bool include_done) const {
 std::vector<Activity> Tracker::overdue_activities() const {
     std::vector<Activity> result;
     for (const auto& a : activities_) {
-        if (!a.alert_after) continue;
+        if (!a.alert_after || a.type != ActivityType::Habit) continue;
         auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now() - last_done(a)).count();
         if (elapsed >= *a.alert_after)
             result.push_back(a);

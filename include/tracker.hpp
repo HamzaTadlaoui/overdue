@@ -8,8 +8,12 @@ class Tracker {
 public:
     explicit Tracker(std::filesystem::path data_path);
 
-    bool add(const std::string& name);
+    bool add(const std::string& name,
+             std::optional<long long> alarm = std::nullopt,
+             std::optional<StreakConfig> streak = std::nullopt);
     bool addtask(const std::string& name);
+    bool setstreak(const std::string& name, StreakConfig sc);
+    bool delstreak(const std::string& name);
     bool log(const std::string& name,
              std::optional<std::chrono::system_clock::time_point> when = std::nullopt);
     bool unlog(const std::string& name);
@@ -20,6 +24,7 @@ public:
 
     std::vector<Activity> habits() const;
     std::vector<Activity> tasks(bool include_done = false) const;
+    const std::vector<Activity>& all() const;
     std::vector<Activity> overdue_activities() const;
     std::optional<Activity> find(const std::string& name) const;
 
