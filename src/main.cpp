@@ -1,5 +1,6 @@
 #include "tracker.hpp"
 #include "stats.hpp"
+#include <cstdio>
 #include <iostream>
 #include <print>
 #include <span>
@@ -131,6 +132,25 @@ int main(int argc, char* argv[]) {
         else if (cmd == "unlog") {
             if (argc < 3) { std::println(stderr, "Usage: overdue unlog <name>"); return 1; }
             auto name = join_args(std::span(argv + 2, argc - 2));
+
+            // Guard against wiping out an older log by accident: unlog removes the
+            // most recent log (logs.back()); if that one is over an hour old, confirm.
+            if (auto a = tracker.find(name); a && a->logs.size() > 1) {
+                auto when = a->logs.back();
+                auto age = std::chrono::duration_cast<std::chrono::seconds>(now() - when).count();
+                if (age > 3600) {
+                    std::print("Last log for \"{}\" was {} ago ({}). Unlog it? [y/N] ",
+                        name, format_elapsed(when), format_datetime(when));
+                    std::fflush(stdout);
+                    std::string answer;
+                    std::getline(std::cin, answer);
+                    if (answer != "y" && answer != "Y" && answer != "yes") {
+                        std::println("Cancelled.");
+                        return 0;
+                    }
+                }
+            }
+
             if (!tracker.unlog(name))
                 std::println(stderr, "\"{}\" not found or no previous log to restore.", name);
             else

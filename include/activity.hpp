@@ -65,6 +65,9 @@ inline std::optional<std::chrono::system_clock::time_point> parse_at(const std::
     if (s.size() < 10) return std::nullopt;
     try {
         int y = std::stoi(s.substr(0, 4));
+        // system_clock can't represent dates outside ~1678–2262; out-of-range
+        // years would silently wrap into the past and bypass the future-date guard.
+        if (y < 1678 || y > 2261) return std::nullopt;
         unsigned mo = std::stoi(s.substr(5, 2));
         unsigned d = std::stoi(s.substr(8, 2));
         std::chrono::year_month_day ymd{std::chrono::year{y}, std::chrono::month{mo}, std::chrono::day{d}};
