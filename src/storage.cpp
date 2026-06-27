@@ -24,14 +24,26 @@ std::vector<Activity> Storage::load(const std::filesystem::path& path) {
         Activity a;
         a.name = item["name"].get<std::string>();
         a.type = (item.value("type", "habit") == "task") ? ActivityType::Task : ActivityType::Habit;
-        for (auto unix : item["logs"])
-            a.logs.push_back(from_unix(unix.get<long long>()));
+        for (const auto& l : item["logs"]) {
+            // Old format: bare unix number. New format: { "t": unix, "q": amount? }.
+            if (l.is_object()) {
+                LogEntry e{from_unix(l["t"].get<long long>()), std::nullopt};
+                if (l.contains("q")) e.amount = l["q"].get<double>();
+                a.logs.push_back(e);
+            } else {
+                a.logs.push_back({from_unix(l.get<long long>()), std::nullopt});
+            }
+        }
         if (a.logs.empty())
             throw std::runtime_error("Activity \"" + a.name + "\" has no logs — data may be corrupted");
         if (item.contains("completed_at"))
             a.completed_at = from_unix(item["completed_at"].get<long long>());
         if (item.contains("alert_after"))
             a.alert_after = item["alert_after"].get<long long>();
+        if (item.contains("unit"))
+            a.unit = item["unit"].get<std::string>();
+        if (item.contains("target"))
+            a.target = item["target"].get<double>();
         if (item.contains("streak")) {
             const auto& s = item["streak"];
             std::string mode = s["mode"].get<std::string>();
@@ -56,8 +68,11 @@ void Storage::save(const std::filesystem::path& path, const std::vector<Activity
     json j = json::array();
     for (const auto& a : activities) {
         json logs = json::array();
-        for (const auto& tp : a.logs)
-            logs.push_back(to_unix(tp));
+        for (const auto& e : a.logs) {
+            json le = {{"t", to_unix(e.when)}};
+            if (e.amount) le["q"] = *e.amount;
+            logs.push_back(le);
+        }
         json entry = {
             {"name", a.name},
             {"type", a.type == ActivityType::Task ? "task" : "habit"},
@@ -67,6 +82,10 @@ void Storage::save(const std::filesystem::path& path, const std::vector<Activity
             entry["completed_at"] = to_unix(*a.completed_at);
         if (a.alert_after)
             entry["alert_after"] = *a.alert_after;
+        if (a.unit)
+            entry["unit"] = *a.unit;
+        if (a.target)
+            entry["target"] = *a.target;
         if (a.streak) {
             if (a.streak->mode == StreakMode::Interval) {
                 entry["streak"] = {{"mode", "interval"}, {"secs", a.streak->interval_secs}};

@@ -6,22 +6,34 @@ Tracker::Tracker(std::filesystem::path data_path)
 
 bool Tracker::add(const std::string& name,
                   std::optional<long long> alarm,
-                  std::optional<StreakConfig> streak) {
+                  std::optional<StreakConfig> streak,
+                  std::optional<std::string> unit,
+                  std::optional<double> target) {
     if (find(name)) return false;
     Activity a;
     a.name = name;
     a.type = ActivityType::Habit;
-    a.logs = {now()};
+    a.logs = {LogEntry{now(), std::nullopt}};
     a.alert_after = alarm;
     a.streak = streak;
+    a.unit = std::move(unit);
+    a.target = target;
     activities_.push_back(std::move(a));
     save();
     return true;
 }
 
-bool Tracker::addtask(const std::string& name) {
+bool Tracker::addtask(const std::string& name,
+                      std::optional<std::string> unit,
+                      std::optional<double> target) {
     if (find(name)) return false;
-    activities_.push_back({name, ActivityType::Task, {now()}, std::nullopt, std::nullopt});
+    Activity a;
+    a.name = name;
+    a.type = ActivityType::Task;
+    a.logs = {LogEntry{now(), std::nullopt}};
+    a.unit = std::move(unit);
+    a.target = target;
+    activities_.push_back(std::move(a));
     save();
     return true;
 }
@@ -34,11 +46,13 @@ bool Tracker::done(const std::string& name) {
     return true;
 }
 
-bool Tracker::log(const std::string& name, std::optional<std::chrono::system_clock::time_point> when) {
+bool Tracker::log(const std::string& name,
+                  std::optional<std::chrono::system_clock::time_point> when,
+                  std::optional<double> amount) {
     auto it = std::ranges::find_if(activities_, [&](const Activity& a) { return a.name == name; });
     if (it == activities_.end()) return false;
-    it->logs.push_back(when.value_or(now()));
-    std::ranges::sort(it->logs);
+    it->logs.push_back(LogEntry{when.value_or(now()), amount});
+    std::ranges::sort(it->logs, {}, &LogEntry::when);
     save();
     return true;
 }
@@ -88,6 +102,38 @@ bool Tracker::delalarm(const std::string& name) {
     auto it = std::ranges::find_if(activities_, [&](const Activity& a) { return a.name == name; });
     if (it == activities_.end()) return false;
     it->alert_after = std::nullopt;
+    save();
+    return true;
+}
+
+bool Tracker::setunit(const std::string& name, const std::string& unit) {
+    auto it = std::ranges::find_if(activities_, [&](const Activity& a) { return a.name == name; });
+    if (it == activities_.end()) return false;
+    it->unit = unit;
+    save();
+    return true;
+}
+
+bool Tracker::delunit(const std::string& name) {
+    auto it = std::ranges::find_if(activities_, [&](const Activity& a) { return a.name == name; });
+    if (it == activities_.end()) return false;
+    it->unit = std::nullopt;
+    save();
+    return true;
+}
+
+bool Tracker::settarget(const std::string& name, double target) {
+    auto it = std::ranges::find_if(activities_, [&](const Activity& a) { return a.name == name; });
+    if (it == activities_.end()) return false;
+    it->target = target;
+    save();
+    return true;
+}
+
+bool Tracker::deltarget(const std::string& name) {
+    auto it = std::ranges::find_if(activities_, [&](const Activity& a) { return a.name == name; });
+    if (it == activities_.end()) return false;
+    it->target = std::nullopt;
     save();
     return true;
 }

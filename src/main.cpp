@@ -29,11 +29,12 @@ static void notify(const std::string& title, const std::string& body) {
 
 static void print_usage() {
     std::println("Usage:");
-    std::println("  overdue add <name>              Track a recurring habit");
-    std::println("  overdue addtask <name>          Add a one-time task");
+    std::println("  overdue add <name>              Track a recurring habit ([--unit u] [--target n])");
+    std::println("  overdue addtask <name>          Add a one-time task ([--unit u] [--target n])");
     std::println("  overdue log <name>              Mark habit as done now");
     std::println("  overdue log <name> --ago <dur>  Mark as done X time ago (2h, 1d6h...)");
     std::println("  overdue log <name> --at <date>  Mark as done at date (2026-06-22T08:15)");
+    std::println("  overdue log <name> --amount <n> Record a quantity with the log");
     std::println("  overdue unlog <name>            Cancel the last log");
     std::println("  overdue done <name>             Mark a task as completed");
     std::println("  overdue list                    Show habits and active tasks");
@@ -42,10 +43,14 @@ static void print_usage() {
     std::println("  overdue delete <name>           Remove an entry");
     std::println("  overdue setalarm <name> <dur>   Alert after this long without logging");
     std::println("  overdue delalarm <name>         Remove alert");
+    std::println("  overdue setunit <name> <unit>   Label amounts for an entry (e.g. km)");
+    std::println("  overdue delunit <name>          Remove the unit label");
+    std::println("  overdue settarget <name> <n>    Set a goal for accumulated amount");
+    std::println("  overdue deltarget <name>        Remove the target");
     std::println("  overdue check                   Send notifications for overdue habits");
     std::println("  overdue setstreak <name> <s>    Set streak (daily/weekly/monthly/3d...)");
     std::println("  overdue delstreak <name>        Remove streak tracking");
-    std::println("  overdue stats                   Show global stats");
+    std::println("  overdue stats [name]            Global stats, or detail for one entry");
 }
 
 int main(int argc, char* argv[]) {
@@ -56,10 +61,12 @@ int main(int argc, char* argv[]) {
         std::string cmd = argv[1];
 
         if (cmd == "add") {
-            if (argc < 3) { std::println(stderr, "Usage: overdue add <name> [--alarm <dur>] [--streak daily|weekly|monthly|<dur>]"); return 1; }
+            if (argc < 3) { std::println(stderr, "Usage: overdue add <name> [--alarm <dur>] [--streak daily|weekly|monthly|<dur>] [--unit <u>] [--target <n>]"); return 1; }
 
             std::optional<long long> alarm;
             std::optional<StreakConfig> streak;
+            std::optional<std::string> unit;
+            std::optional<double> target;
             std::vector<std::string> name_parts;
 
             for (int i = 2; i < argc; ++i) {
@@ -71,6 +78,11 @@ int main(int argc, char* argv[]) {
                 } else if (arg == "--streak" && i + 1 < argc) {
                     streak = parse_streak(argv[++i]);
                     if (!streak) { std::println(stderr, "Invalid streak. Examples: daily, weekly, monthly, 3d, 12h"); return 1; }
+                } else if (arg == "--unit" && i + 1 < argc) {
+                    unit = argv[++i];
+                } else if (arg == "--target" && i + 1 < argc) {
+                    target = parse_amount(argv[++i]);
+                    if (!target) { std::println(stderr, "Invalid target. Expected a non-negative number."); return 1; }
                 } else {
                     name_parts.push_back(arg);
                 }
@@ -79,23 +91,43 @@ int main(int argc, char* argv[]) {
             std::string name;
             for (const auto& p : name_parts) { if (!name.empty()) name += ' '; name += p; }
 
-            if (!tracker.add(name, alarm, streak))
+            if (!tracker.add(name, alarm, streak, unit, target))
                 std::println(stderr, "\"{}\" is already being tracked.", name);
             else
                 std::println("✓ Now tracking \"{}\"", name);
         }
         else if (cmd == "addtask") {
-            if (argc < 3) { std::println(stderr, "Usage: overdue addtask <name>"); return 1; }
-            auto name = join_args(std::span(argv + 2, argc - 2));
-            if (!tracker.addtask(name))
+            if (argc < 3) { std::println(stderr, "Usage: overdue addtask <name> [--unit <u>] [--target <n>]"); return 1; }
+
+            std::optional<std::string> unit;
+            std::optional<double> target;
+            std::vector<std::string> name_parts;
+
+            for (int i = 2; i < argc; ++i) {
+                std::string arg = argv[i];
+                if (arg == "--unit" && i + 1 < argc) {
+                    unit = argv[++i];
+                } else if (arg == "--target" && i + 1 < argc) {
+                    target = parse_amount(argv[++i]);
+                    if (!target) { std::println(stderr, "Invalid target. Expected a non-negative number."); return 1; }
+                } else {
+                    name_parts.push_back(arg);
+                }
+            }
+            if (name_parts.empty()) { std::println(stderr, "Missing task name."); return 1; }
+            std::string name;
+            for (const auto& p : name_parts) { if (!name.empty()) name += ' '; name += p; }
+
+            if (!tracker.addtask(name, unit, target))
                 std::println(stderr, "\"{}\" already exists.", name);
             else
                 std::println("✓ Task \"{}\" added.", name);
         }
         else if (cmd == "log") {
-            if (argc < 3) { std::println(stderr, "Usage: overdue log <name> [--ago <dur> | --at <date>]"); return 1; }
+            if (argc < 3) { std::println(stderr, "Usage: overdue log <name> [--ago <dur> | --at <date>] [--amount <n>]"); return 1; }
 
             std::optional<std::chrono::system_clock::time_point> when;
+            std::optional<double> amount;
             std::vector<std::string> name_parts;
 
             for (int i = 2; i < argc; ++i) {
@@ -110,6 +142,10 @@ int main(int argc, char* argv[]) {
                         when = parse_at(val);
                         if (!when) { std::println(stderr, "Invalid date \"{}\". Expected: 2026-06-22 or 2026-06-22T08:15", val); return 1; }
                     }
+                } else if (arg == "--amount" && i + 1 < argc) {
+                    std::string val = argv[++i];
+                    amount = parse_amount(val);
+                    if (!amount) { std::println(stderr, "Invalid amount \"{}\". Expected a non-negative number.", val); return 1; }
                 } else {
                     name_parts.push_back(arg);
                 }
@@ -122,11 +158,12 @@ int main(int argc, char* argv[]) {
             std::string name;
             for (const auto& p : name_parts) { if (!name.empty()) name += ' '; name += p; }
 
-            if (!tracker.log(name, when))
+            if (!tracker.log(name, when, amount))
                 std::println(stderr, "\"{}\" not found.", name);
             else {
                 auto label = when ? std::format("logged at {}", format_datetime(*when)) : "logged now";
-                std::println("✓ \"{}\" {}.", name, label);
+                auto qty = amount ? std::format(" (+{})", format_amount(*amount)) : "";
+                std::println("✓ \"{}\" {}{}.", name, label, qty);
             }
         }
         else if (cmd == "unlog") {
@@ -136,7 +173,7 @@ int main(int argc, char* argv[]) {
             // Guard against wiping out an older log by accident: unlog removes the
             // most recent log (logs.back()); if that one is over an hour old, confirm.
             if (auto a = tracker.find(name); a && a->logs.size() > 1) {
-                auto when = a->logs.back();
+                auto when = a->logs.back().when;
                 auto age = std::chrono::duration_cast<std::chrono::seconds>(now() - when).count();
                 if (age > 3600) {
                     std::print("Last log for \"{}\" was {} ago ({}). Unlog it? [y/N] ",
@@ -218,12 +255,12 @@ int main(int argc, char* argv[]) {
                 for (const auto& a : tasks) {
                     if (a.completed_at) {
                         std::println("{:<22} {:<21} ✓ done ({})", a.name,
-                            format_datetime(a.logs.front()),
+                            format_datetime(a.logs.front().when),
                             format_datetime(*a.completed_at));
                     } else {
                         std::println("{:<22} {:<21} {}", a.name,
-                            format_datetime(a.logs.front()),
-                            format_elapsed(a.logs.front()));
+                            format_datetime(a.logs.front().when),
+                            format_elapsed(a.logs.front().when));
                     }
                 }
             }
@@ -234,11 +271,11 @@ int main(int argc, char* argv[]) {
             auto a = tracker.find(name);
             if (!a) { std::println(stderr, "\"{}\" not found.", name); return 1; }
             if (a->type == ActivityType::Task) {
-                std::println("{} [task] — added {}", a->name, format_datetime(a->logs.front()));
+                std::println("{} [task] — added {}", a->name, format_datetime(a->logs.front().when));
                 if (a->completed_at)
                     std::println("  completed: {}", format_datetime(*a->completed_at));
                 else
-                    std::println("  pending for: {}", format_elapsed(a->logs.front()));
+                    std::println("  pending for: {}", format_elapsed(a->logs.front().when));
             } else {
                 std::println("{} — last done {} ({})", a->name,
                     format_datetime(last_done(*a)), format_elapsed(last_done(*a)));
@@ -249,6 +286,19 @@ int main(int argc, char* argv[]) {
                         compute_streak(*a) > 1 ? "in a row" : "",
                         format_streak_label(*a->streak));
                 std::println("  total logs: {}", a->logs.size());
+            }
+            if (auto qs = quantity_stats(*a)) {
+                std::string u = a->unit ? " " + *a->unit : "";
+                std::println("  amount: {}{} total over {} logs (avg {}, max {})",
+                    format_amount(qs->total), u, qs->count,
+                    format_amount(qs->avg_per_log), format_amount(qs->max_single));
+                if (a->target)
+                    std::println("  target: {} / {}{} ({:.0f}%)",
+                        format_amount(qs->total), format_amount(*a->target), u,
+                        *a->target > 0 ? 100.0 * qs->total / *a->target : 0.0);
+            } else if (a->target) {
+                std::println("  target: 0 / {}{} (0%)", format_amount(*a->target),
+                    a->unit ? " " + *a->unit : "");
             }
         }
         else if (cmd == "delete") {
@@ -281,6 +331,42 @@ int main(int argc, char* argv[]) {
             else
                 std::println("✓ Alarm removed for \"{}\"", name);
         }
+        else if (cmd == "setunit") {
+            if (argc < 4) { std::println(stderr, "Usage: overdue setunit <name> <unit>"); return 1; }
+            std::string unit = argv[argc - 1];
+            auto name = join_args(std::span(argv + 2, argc - 3));
+            if (!tracker.setunit(name, unit))
+                std::println(stderr, "\"{}\" not found.", name);
+            else
+                std::println("✓ Unit for \"{}\" set to {}", name, unit);
+        }
+        else if (cmd == "delunit") {
+            if (argc < 3) { std::println(stderr, "Usage: overdue delunit <name>"); return 1; }
+            auto name = join_args(std::span(argv + 2, argc - 2));
+            if (!tracker.delunit(name))
+                std::println(stderr, "\"{}\" not found.", name);
+            else
+                std::println("✓ Unit removed for \"{}\"", name);
+        }
+        else if (cmd == "settarget") {
+            if (argc < 4) { std::println(stderr, "Usage: overdue settarget <name> <n>"); return 1; }
+            std::string t_str = argv[argc - 1];
+            auto target = parse_amount(t_str);
+            if (!target) { std::println(stderr, "Invalid target \"{}\". Expected a non-negative number.", t_str); return 1; }
+            auto name = join_args(std::span(argv + 2, argc - 3));
+            if (!tracker.settarget(name, *target))
+                std::println(stderr, "\"{}\" not found.", name);
+            else
+                std::println("✓ Target for \"{}\" set to {}", name, format_amount(*target));
+        }
+        else if (cmd == "deltarget") {
+            if (argc < 3) { std::println(stderr, "Usage: overdue deltarget <name>"); return 1; }
+            auto name = join_args(std::span(argv + 2, argc - 2));
+            if (!tracker.deltarget(name))
+                std::println(stderr, "\"{}\" not found.", name);
+            else
+                std::println("✓ Target removed for \"{}\"", name);
+        }
         else if (cmd == "check") {
             auto overdue = tracker.overdue_activities();
             if (overdue.empty()) return 0;
@@ -289,6 +375,36 @@ int main(int argc, char* argv[]) {
                 auto threshold = format_duration(*a.alert_after);
                 notify(std::format("overdue: {}", a.name),
                        std::format("{} since last done (alarm: {})", elapsed, threshold));
+            }
+        }
+        else if (cmd == "stats" && argc >= 3) {
+            auto name = join_args(std::span(argv + 2, argc - 2));
+            auto a = tracker.find(name);
+            if (!a) { std::println(stderr, "\"{}\" not found.", name); return 1; }
+
+            std::println("{}{}", a->name, a->type == ActivityType::Task ? " [task]" : "");
+            std::println("{}", std::string(40, '-'));
+            std::println("  logs:       {}", a->logs.size());
+            std::println("  last done:  {} ({})",
+                format_datetime(last_done(*a)), format_elapsed(last_done(*a)));
+            if (a->streak)
+                std::println("  streak:     {} ({})", compute_streak(*a), format_streak_label(*a->streak));
+
+            if (auto qs = quantity_stats(*a)) {
+                std::string u = a->unit ? " " + *a->unit : "";
+                std::println("  total:      {}{}   avg/log: {}{}",
+                    format_amount(qs->total), u, format_amount(qs->avg_per_log), u);
+                std::println("  avg/day:    {}{}   best day: {}{}",
+                    format_amount(qs->avg_per_day), u, format_amount(qs->best_day), u);
+                std::println("  max single: {}{}", format_amount(qs->max_single), u);
+                std::println("  last 7d:    {}{}   prev 7d: {}{}",
+                    format_amount(qs->last7), u, format_amount(qs->prev7), u);
+                if (a->target)
+                    std::println("  target:     {} / {}{} ({:.0f}%)",
+                        format_amount(qs->total), format_amount(*a->target), u,
+                        *a->target > 0 ? 100.0 * qs->total / *a->target : 0.0);
+            } else {
+                std::println("  (no amounts logged — use 'log {} --amount <n>')", a->name);
             }
         }
         else if (cmd == "stats") {

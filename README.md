@@ -50,22 +50,51 @@ Requires `notify-send` (included in most GNOME/KDE setups).
 
 | Command | Description |
 |---|---|
-| `overdue add <name>` | Track a recurring habit |
-| `overdue addtask <name>` | Add a one-time task |
+| `overdue add <name>` | Track a recurring habit (`[--unit u] [--target n]`) |
+| `overdue addtask <name>` | Add a one-time task (`[--unit u] [--target n]`) |
 | `overdue log <name>` | Mark habit as done right now |
 | `overdue log <name> --ago <dur>` | Mark as done X time ago |
 | `overdue log <name> --at <datetime>` | Mark as done at a specific date/time |
+| `overdue log <name> --amount <n>` | Record a quantity with the log |
 | `overdue unlog <name>` | Cancel the last log |
 | `overdue done <name>` | Mark a task as completed (archives it) |
 | `overdue list` | Show habits and active tasks |
 | `overdue list --done` | Also show completed tasks |
 | `overdue show <name>` | Show details for one entry |
+| `overdue stats [name]` | Global stats, or quantity detail for one entry |
 | `overdue delete <name>` | Remove an entry |
 | `overdue setalarm <name> <dur>` | Alert after this much time without logging |
 | `overdue delalarm <name>` | Remove the alert |
+| `overdue setunit <name> <unit>` | Label amounts for an entry (e.g. `km`) |
+| `overdue delunit <name>` | Remove the unit label |
+| `overdue settarget <name> <n>` | Set a goal for accumulated amount |
+| `overdue deltarget <name>` | Remove the target |
 | `overdue check` | Send desktop notifications for all overdue habits |
 
 Activity names can be multi-word without quotes: `overdue add brush teeth`
+
+### Quantities
+
+Logs can carry an optional amount, so a habit or task becomes a counter as well as a
+timestamp — useful for "5.2 km run" or "30 pushups". `--amount` combines with `--ago`/`--at`.
+
+```bash
+overdue add running --unit km --target 100   # optional unit label + goal
+overdue log running --amount 5.2
+overdue log running --amount 8 --ago 1d
+overdue stats running                         # total, avg/log, avg/day, best day, 7-day trend
+```
+
+Amounts also work on tasks as **partial progress** — logging some doesn't complete the
+task, it just records that you did something; `done` still marks it finished:
+
+```bash
+overdue addtask "write report" --unit pages --target 10
+overdue log "write report" --amount 3        # 3 / 10 pages, still pending
+```
+
+Amounts are only meaningful within a single activity (km and pushups aren't comparable),
+so quantity stats are always per-activity; the global `stats` view ignores them.
 
 ### Duration format
 
@@ -81,7 +110,7 @@ Combine units freely: `3d`, `12h`, `30m`, `1d6h`, `1d6h30m`
 
 ## Data
 
-All logs are stored in `~/.local/share/overdue/data.json`. Every log entry is preserved — full history, never overwritten. This will power stats and streaks in future versions.
+All logs are stored in `~/.local/share/overdue/data.json`, written atomically (temp file + rename) so a crash can't corrupt it. Every log entry is preserved — full history, never overwritten — which is what powers streaks and stats. Each log is `{ "t": <unix>, "q": <amount?> }`; older files that stored bare timestamps are upgraded automatically on the next write.
 
 ---
 

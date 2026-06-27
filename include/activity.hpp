@@ -1,5 +1,6 @@
 #pragma once
 #include <chrono>
+#include <cmath>
 #include <optional>
 #include <string>
 #include <vector>
@@ -15,13 +16,20 @@ struct StreakConfig {
     CalendarUnit unit = CalendarUnit::Day;
 };
 
+struct LogEntry {
+    std::chrono::system_clock::time_point when;
+    std::optional<double> amount; // nullopt = presence-only log
+};
+
 struct Activity {
     std::string name;
     ActivityType type = ActivityType::Habit;
-    std::vector<std::chrono::system_clock::time_point> logs;
+    std::vector<LogEntry> logs;
     std::optional<std::chrono::system_clock::time_point> completed_at;
     std::optional<long long> alert_after;
     std::optional<StreakConfig> streak;
+    std::optional<std::string> unit;   // display label for amounts, e.g. "km"
+    std::optional<double> target;      // optional goal for accumulated amount
 };
 
 inline std::chrono::system_clock::time_point now() {
@@ -29,7 +37,7 @@ inline std::chrono::system_clock::time_point now() {
 }
 
 inline const std::chrono::system_clock::time_point& last_done(const Activity& a) {
-    return a.logs.back();
+    return a.logs.back().when;
 }
 
 inline std::string format_datetime(const std::chrono::system_clock::time_point& tp) {
@@ -137,4 +145,26 @@ inline std::string format_streak_label(const StreakConfig& sc) {
         }
     }
     return format_duration(sc.interval_secs);
+}
+
+// Renders a quantity without noisy trailing zeros: 30.0 -> "30", 5.20 -> "5.2"
+inline std::string format_amount(double v) {
+    std::string s = std::format("{:.4f}", v);
+    auto dot = s.find('.');
+    if (dot != std::string::npos) {
+        auto last = s.find_last_not_of('0');
+        if (last == dot) --last; // drop a now-bare decimal point
+        s.erase(last + 1);
+    }
+    return s;
+}
+
+// Parses a non-negative quantity; rejects trailing junk and non-finite values.
+inline std::optional<double> parse_amount(const std::string& s) {
+    try {
+        std::size_t pos = 0;
+        double v = std::stod(s, &pos);
+        if (pos != s.size() || !std::isfinite(v) || v < 0) return std::nullopt;
+        return v;
+    } catch (...) { return std::nullopt; }
 }
