@@ -85,6 +85,12 @@ Activity names can be multi-word without quotes: `overdue add brush teeth`
 - per-entry **Manage** panel: set/remove alarm, streak, unit, and target
 - **live-ticking "since last done" timers** (updated every second in the browser), progress
   bars toward targets, streak/alarm badges, and overdue cards highlighted in red
+- a **Stats** tab with a 14-day activity chart, global highlights (most consistent / neglected /
+  logged, best streak), a per-habit breakdown (logs, streak, average interval, total, 7-day
+  trend), and a task summary
+- click any entry name for a **detail page**: a GitHub-style calendar heatmap (last 26 weeks),
+  key stat cards, a quantity breakdown (total, avg/log, avg/day, best day, max, 7-day trend),
+  the full log history, and the same log/manage controls inline
 
 The page also refreshes its data every 30 seconds, pausing automatically while you're typing
 in a field or have a panel open so it never interrupts you.

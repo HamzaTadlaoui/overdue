@@ -199,6 +199,68 @@ static const char* PAGE_HEAD = R"HTML(<!DOCTYPE html>
 
   .empty{color:var(--faint); font-style:italic; padding:.5rem .2rem;}
   footer{margin-top:2.4rem; color:var(--faint); font-size:.78rem; text-align:center;}
+
+  .head-right{display:flex; align-items:center; gap:1rem;}
+  .nav{display:flex; gap:.25rem; background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:.25rem;}
+  .navlink{padding:.35rem .75rem; border-radius:7px; font-size:.84rem; font-weight:600; color:var(--muted); text-decoration:none; transition:.15s;}
+  .navlink:hover{color:var(--text);}
+  .navlink.active{background:var(--surface-2); color:var(--text);}
+  @media(max-width:560px){.tagline{display:none}}
+
+  .panel{background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:1.1rem 1.2rem; margin-bottom:1rem;}
+  .panel-title{font-size:.76rem; text-transform:uppercase; letter-spacing:.07em; color:var(--faint); margin-bottom:.95rem;}
+
+  .chart{display:flex; align-items:flex-end; gap:.35rem; height:150px;}
+  .chart .col{flex:1; display:flex; flex-direction:column; justify-content:flex-end; align-items:center; gap:.35rem; height:100%;}
+  .bar-v{width:72%; min-height:3px; border-radius:5px 5px 0 0; background:linear-gradient(180deg,var(--accent),var(--accent-2));}
+  .chart .col:hover .bar-v{filter:brightness(1.25);}
+  .cl{font-size:.7rem; color:var(--faint); font-variant-numeric:tabular-nums;}
+
+  .highlights{display:grid; grid-template-columns:repeat(auto-fit,minmax(165px,1fr)); gap:.8rem; margin-bottom:1rem;}
+  .hl{background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:.9rem 1rem;}
+  .hl-l{font-size:.7rem; text-transform:uppercase; letter-spacing:.05em; color:var(--faint);}
+  .hl-n{font-size:1.05rem; font-weight:650; margin:.15rem 0; letter-spacing:-.01em;}
+  .hl-d{font-size:.85rem; color:var(--muted);}
+
+  .hrow{display:flex; align-items:center; justify-content:space-between; gap:.8rem; padding:.6rem 0; border-bottom:1px solid var(--border);}
+  .hrow:last-child{border-bottom:none;}
+  .hname{font-weight:600;}
+  .chips{display:flex; flex-wrap:wrap; gap:.4rem; justify-content:flex-end;}
+  .chip{font-size:.75rem; padding:.18rem .55rem; border-radius:999px; white-space:nowrap;
+        background:var(--surface-2); border:1px solid var(--border); color:var(--muted);}
+  .chip.streak{color:#ffd08a; border-color:rgba(255,208,138,.25);}
+  .chip.trend.up{color:var(--ok); border-color:rgba(70,211,154,.3);}
+  .chip.trend.down{color:var(--danger); border-color:rgba(255,107,107,.3);}
+
+  /* clickable entry names linking to the detail page */
+  .name a{color:inherit; text-decoration:none; border-bottom:1px dashed transparent; transition:.15s;}
+  .name a:hover{color:var(--accent); border-bottom-color:rgba(124,140,255,.5);}
+  .hname a{color:inherit; text-decoration:none;}
+  .hname a:hover{color:var(--accent);}
+
+  /* detail page */
+  .detail-head{margin-bottom:1.2rem;}
+  .back{color:var(--muted); font-size:.85rem; text-decoration:none;}
+  .back:hover{color:var(--text);}
+  .detail-title{font-size:1.9rem; font-weight:700; letter-spacing:-.02em; margin:.55rem 0 .55rem;}
+  .dstats{display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:.8rem; margin-bottom:1.4rem;}
+
+  /* contribution-style calendar heatmap */
+  .cal-scroll{overflow-x:auto; padding-bottom:.2rem;}
+  .cal-months{display:flex; gap:3px; margin-bottom:4px;}
+  .cal-m{width:13px; flex:0 0 13px; font-size:.62rem; color:var(--faint); white-space:nowrap; overflow:visible;}
+  .cal{display:flex; gap:3px;}
+  .cal-col{display:flex; flex-direction:column; gap:3px;}
+  .cal-cell{width:13px; height:13px; flex:0 0 13px; border-radius:3px;
+        background:var(--surface-2); border:1px solid var(--border);}
+  .cal-cell.empty{background:transparent; border-color:transparent;}
+  .cal-cell.l1{background:rgba(124,140,255,.28); border-color:transparent;}
+  .cal-cell.l2{background:rgba(124,140,255,.5);  border-color:transparent;}
+  .cal-cell.l3{background:rgba(124,140,255,.74); border-color:transparent;}
+  .cal-cell.l4{background:var(--accent); border-color:transparent;}
+  .cal-legend{display:flex; align-items:center; justify-content:flex-end; gap:.35rem;
+        color:var(--faint); font-size:.72rem; margin-top:.6rem;}
+  .cal-legend .cal-cell{width:11px; height:11px; flex:0 0 11px;}
 </style>
 </head>
 <body>
@@ -231,7 +293,7 @@ static const char* PAGE_SCRIPT = R"HTML(<script>
     if(window.getSelection && String(window.getSelection())) return true;
     return false;
   }
-  setInterval(function(){ if(!busy()) location.replace("/"); }, 30000);
+  setInterval(function(){ if(!busy()) location.replace(location.pathname); }, 30000);
 
   // Drop the flash from the URL so a manual reload won't replay it, then fade it out.
   if(location.search) history.replaceState(null, "", location.pathname);
@@ -240,6 +302,103 @@ static const char* PAGE_SCRIPT = R"HTML(<script>
 })();
 </script>
 )HTML";
+
+// Brand + nav, shared by the dashboard and the stats page. The sync indicator
+// is a data-since span the client script ticks live.
+static std::string render_header(const char* active) {
+    const char* home  = std::string(active) == "home"  ? " active" : "";
+    const char* stats = std::string(active) == "stats" ? " active" : "";
+    return std::format(
+        "<header><div class=\"brand\"><div class=\"logo\">⏱</div>"
+        "<div><h1>overdue</h1><p class=\"tagline\">how long has it been?</p></div></div>"
+        "<div class=\"head-right\">"
+        "<nav class=\"nav\"><a href=\"/\" class=\"navlink{}\">Dashboard</a>"
+        "<a href=\"/stats\" class=\"navlink{}\">Stats</a></nav>"
+        "<div class=\"sync\">synced <span data-since=\"{}\">0s</span> ago</div>"
+        "</div></header>\n",
+        home, stats, to_epoch(now()));
+}
+
+// Closing markup shared by every page (footer + live-tick script + tags).
+static std::string page_tail() {
+    return std::string(
+        "<footer>overdue · localhost dashboard · loopback only</footer>\n</div>\n")
+        + PAGE_SCRIPT + "</body>\n</html>\n";
+}
+
+// Link to an entry's detail page; the name is the query, so url-encode it.
+static std::string activity_url(const std::string& name) {
+    return "/activity?name=" + url_encode(name);
+}
+
+static std::string hidden_input(const char* name, const std::string& value) {
+    return std::format("<input type=\"hidden\" name=\"{}\" value=\"{}\">", name, html_escape(value));
+}
+
+// A form carrying the CSRF token, a preset entry name, and (optionally) the page
+// to return to after the action — empty `next` falls back to the dashboard.
+static std::string make_form(const std::string& token, const std::string& next,
+                             const char* action, const std::string& name,
+                             const std::string& inner) {
+    return std::format(
+        "<form class=\"row\" method=\"post\" action=\"{}\">{}{}{}{}</form>",
+        action, hidden_input("token", token), hidden_input("name", name),
+        next.empty() ? std::string() : hidden_input("next", next), inner);
+}
+
+// Progress bar (or a bare total) for entries that carry amounts / a target.
+static std::string progress_bar(const Activity& a) {
+    auto qs = quantity_stats(a);
+    double total = qs ? qs->total : 0.0;
+    std::string unit = a.unit ? " " + *a.unit : "";
+    if (a.target) {
+        double pct = *a.target > 0 ? 100.0 * total / *a.target : 0.0;
+        double fill = std::min(100.0, std::max(0.0, pct));
+        return std::format(
+            "<div class=\"bar\"><div class=\"bar-fill\" style=\"width:{:.1f}%\"></div></div>"
+            "<div class=\"bar-label\">{} / {}{} · {:.0f}%</div>",
+            fill, format_amount(total), format_amount(*a.target), unit, pct);
+    }
+    if (qs)
+        return std::format("<div class=\"bar-label\">{}{} total</div>", format_amount(total), unit);
+    return "";
+}
+
+// Shared manage controls (alarm/streak are habit-only; unit/target/delete for all).
+static std::string manage_controls(const std::string& token, const std::string& next,
+                                   const Activity& a, bool is_habit) {
+    auto F = [&](const char* action, const std::string& inner) {
+        return make_form(token, next, action, a.name, inner);
+    };
+    std::string m = "<details class=\"manage\"><summary>Manage ▾</summary><div class=\"manage-grid\">";
+    if (is_habit) {
+        m += F("/setalarm",
+            "<input class=\"in sm\" name=\"dur\" placeholder=\"3d\"><button class=\"btn ghost\">Set alarm</button>");
+        if (a.alert_after)
+            m += F("/delalarm", "<button class=\"btn ghost\">Clear alarm</button>");
+        m += F("/setstreak",
+            "<input class=\"in sm\" name=\"streak\" placeholder=\"daily\"><button class=\"btn ghost\">Set streak</button>");
+        if (a.streak)
+            m += F("/delstreak", "<button class=\"btn ghost\">Clear streak</button>");
+    }
+    m += F("/setunit",
+        "<input class=\"in sm\" name=\"unit\" placeholder=\"km\"><button class=\"btn ghost\">Set unit</button>");
+    if (a.unit)
+        m += F("/delunit", "<button class=\"btn ghost\">Clear unit</button>");
+    m += F("/settarget",
+        "<input class=\"in sm\" name=\"target\" placeholder=\"100\"><button class=\"btn ghost\">Set target</button>");
+    if (a.target)
+        m += F("/deltarget", "<button class=\"btn ghost\">Clear target</button>");
+    // Delete always returns to the dashboard (the detail page would 404 after),
+    // and confirms client-side. Message stays generic to avoid escaping names into JS.
+    m += std::format(
+        "<form class=\"row\" method=\"post\" action=\"/delete\" "
+        "onsubmit=\"return confirm('Delete this entry and all its history?')\">{}{}"
+        "<button class=\"btn danger\">Delete</button></form>",
+        hidden_input("token", token), hidden_input("name", a.name));
+    m += "</div></details>";
+    return m;
+}
 
 static std::string render_page(const std::filesystem::path& data_path,
                                const std::string& token,
@@ -256,64 +415,9 @@ static std::string render_page(const std::filesystem::path& data_path,
 
     std::string tok = html_escape(token);
 
-    // A form carrying the CSRF token plus a preset entry name.
+    // Dashboard forms post here and bounce back to the dashboard (empty `next`).
     auto nform = [&](const char* action, const std::string& name, const std::string& inner) {
-        return std::format(
-            "<form class=\"row\" method=\"post\" action=\"{}\">"
-            "<input type=\"hidden\" name=\"token\" value=\"{}\">"
-            "<input type=\"hidden\" name=\"name\" value=\"{}\">{}</form>",
-            action, tok, html_escape(name), inner);
-    };
-
-    // Progress bar (or a bare total) for entries that carry amounts / a target.
-    auto progress_html = [&](const Activity& a) -> std::string {
-        auto qs = quantity_stats(a);
-        double total = qs ? qs->total : 0.0;
-        std::string unit = a.unit ? " " + *a.unit : "";
-        if (a.target) {
-            double pct = *a.target > 0 ? 100.0 * total / *a.target : 0.0;
-            double fill = std::min(100.0, std::max(0.0, pct));
-            return std::format(
-                "<div class=\"bar\"><div class=\"bar-fill\" style=\"width:{:.1f}%\"></div></div>"
-                "<div class=\"bar-label\">{} / {}{} · {:.0f}%</div>",
-                fill, format_amount(total), format_amount(*a.target), unit, pct);
-        }
-        if (qs)
-            return std::format("<div class=\"bar-label\">{}{} total</div>", format_amount(total), unit);
-        return "";
-    };
-
-    // Shared manage controls (alarm/streak are habit-only; unit/target/delete for all)
-    auto manage_block = [&](const Activity& a, bool is_habit) {
-        std::string m = "<details class=\"manage\"><summary>Manage ▾</summary><div class=\"manage-grid\">";
-        if (is_habit) {
-            m += nform("/setalarm", a.name,
-                "<input class=\"in sm\" name=\"dur\" placeholder=\"3d\"><button class=\"btn ghost\">Set alarm</button>");
-            if (a.alert_after)
-                m += nform("/delalarm", a.name, "<button class=\"btn ghost\">Clear alarm</button>");
-            m += nform("/setstreak", a.name,
-                "<input class=\"in sm\" name=\"streak\" placeholder=\"daily\"><button class=\"btn ghost\">Set streak</button>");
-            if (a.streak)
-                m += nform("/delstreak", a.name, "<button class=\"btn ghost\">Clear streak</button>");
-        }
-        m += nform("/setunit", a.name,
-            "<input class=\"in sm\" name=\"unit\" placeholder=\"km\"><button class=\"btn ghost\">Set unit</button>");
-        if (a.unit)
-            m += nform("/delunit", a.name, "<button class=\"btn ghost\">Clear unit</button>");
-        m += nform("/settarget", a.name,
-            "<input class=\"in sm\" name=\"target\" placeholder=\"100\"><button class=\"btn ghost\">Set target</button>");
-        if (a.target)
-            m += nform("/deltarget", a.name, "<button class=\"btn ghost\">Clear target</button>");
-        // Delete confirms client-side; the message stays generic to avoid escaping names into JS.
-        m += std::format(
-            "<form class=\"row\" method=\"post\" action=\"/delete\" "
-            "onsubmit=\"return confirm('Delete this entry and all its history?')\">"
-            "<input type=\"hidden\" name=\"token\" value=\"{}\">"
-            "<input type=\"hidden\" name=\"name\" value=\"{}\">"
-            "<button class=\"btn danger\">Delete</button></form>",
-            tok, html_escape(a.name));
-        m += "</div></details>";
-        return m;
+        return make_form(token, "", action, name, inner);
     };
 
     std::string out = PAGE_HEAD;
@@ -322,12 +426,7 @@ static std::string render_page(const std::filesystem::path& data_path,
         out += std::format("<div class=\"toast {}\">{}</div>\n",
                            flash->first ? "ok" : "err", html_escape(flash->second));
 
-    // Header: brand + a live "updated Xs ago" indicator the JS keeps ticking.
-    out += std::format(
-        "<header><div class=\"brand\"><div class=\"logo\">⏱</div>"
-        "<div><h1>overdue</h1><p class=\"tagline\">how long has it been?</p></div></div>"
-        "<div class=\"sync\">synced <span data-since=\"{}\">0s</span> ago</div></header>\n",
-        to_epoch(now()));
+    out += render_header("home");
 
     // Summary stats
     out += "<div class=\"stats\">\n";
@@ -387,19 +486,19 @@ static std::string render_page(const std::filesystem::path& data_path,
 
             out += std::format(
                 "<div class=\"entry{}\">"
-                "<div class=\"entry-head\"><div class=\"name\">{}</div><div class=\"badges\">{}</div></div>"
+                "<div class=\"entry-head\"><div class=\"name\"><a href=\"{}\">{}</a></div><div class=\"badges\">{}</div></div>"
                 "<div class=\"timer{}\" data-since=\"{}\">{}</div>"
                 "<div class=\"sub\">last done {}</div>"
                 "{}"
                 "<div class=\"actions\">{}{}</div>"
                 "{}</div>\n",
                 od ? " over" : "",
-                html_escape(a.name), badges,
+                activity_url(a.name), html_escape(a.name), badges,
                 od ? " over" : "", to_epoch(last_done(a)), format_elapsed(last_done(a)),
                 format_datetime(last_done(a)),
-                progress_html(a),
+                progress_bar(a),
                 log_form, unlog_form,
-                manage_block(a, /*is_habit=*/true));
+                manage_controls(token, "", a, /*is_habit=*/true));
         }
     }
 
@@ -432,24 +531,392 @@ static std::string render_page(const std::filesystem::path& data_path,
 
             out += std::format(
                 "<div class=\"entry\">"
-                "<div class=\"entry-head\"><div class=\"name\">{}</div><div class=\"badges\">{}</div></div>"
+                "<div class=\"entry-head\"><div class=\"name\"><a href=\"{}\">{}</a></div><div class=\"badges\">{}</div></div>"
                 "{}"
                 "<div class=\"sub\">{}</div>"
                 "{}"
                 "<div class=\"actions\">{}</div>"
                 "{}</div>\n",
-                html_escape(a.name), badges,
+                activity_url(a.name), html_escape(a.name), badges,
                 timer,
                 html_escape(sub),
-                progress_html(a),
+                progress_bar(a),
                 actions,
-                manage_block(a, /*is_habit=*/false));
+                manage_controls(token, "", a, /*is_habit=*/false));
         }
     }
 
-    out += "<footer>overdue · localhost dashboard · loopback only</footer>\n</div>\n";
-    out += PAGE_SCRIPT;
-    out += "</body>\n</html>\n";
+    out += page_tail();
+    return out;
+}
+
+static std::string render_stats_page(const std::filesystem::path& data_path) {
+    Tracker tracker{data_path};
+    const auto& all = tracker.all();
+    auto gs      = compute_global(all);
+    auto habits  = tracker.habits();
+    auto tasks   = tracker.tasks(/*include_done=*/true);
+    auto overdue = tracker.overdue_activities();
+
+    std::string out = PAGE_HEAD;
+    out += render_header("stats");
+
+    // Overview
+    out += "<div class=\"stats\">\n";
+    out += std::format("<div class=\"stat\"><div class=\"n\">{}</div><div class=\"l\">Habits</div></div>\n", gs.habit_count);
+    out += std::format("<div class=\"stat\"><div class=\"n\">{}</div><div class=\"l\">Total logs</div></div>\n", gs.total_logs);
+    out += std::format("<div class=\"stat\"><div class=\"n\">{} / {}</div><div class=\"l\">Tasks done</div></div>\n", gs.task_done, gs.task_total);
+    out += std::format("<div class=\"stat{}\"><div class=\"n\">{}</div><div class=\"l\">Overdue</div></div>\n",
+                       overdue.empty() ? "" : " warn", overdue.size());
+    out += "</div>\n";
+
+    if (all.empty()) {
+        out += "<p class=\"empty\">No data yet — <a href=\"/\">add a habit or task</a> to get started.</p>\n";
+        out += page_tail();
+        return out;
+    }
+
+    // Daily activity chart — log counts per local day over the last 14 days.
+    {
+        using namespace std::chrono;
+        auto today = to_local_days(now());
+        std::map<local_days, int> per_day;
+        for (const auto& a : all)
+            for (const auto& e : a.logs)
+                per_day[to_local_days(e.when)]++;
+
+        const int DAYS = 14;
+        int maxc = 1;
+        std::vector<std::pair<local_days, int>> series;
+        for (int i = 0; i < DAYS; ++i) {
+            auto d = today - days{DAYS - 1 - i};
+            int c = 0;
+            if (auto it = per_day.find(d); it != per_day.end()) c = it->second;
+            series.push_back({d, c});
+            maxc = std::max(maxc, c);
+        }
+
+        out += "<div class=\"panel\"><div class=\"panel-title\">Activity · last 14 days</div><div class=\"chart\">";
+        for (const auto& [d, c] : series) {
+            year_month_day ymd{d};
+            out += std::format(
+                "<div class=\"col\" title=\"{:04}-{:02}-{:02}: {} log(s)\">"
+                "<div class=\"bar-v\" style=\"height:{:.0f}%\"></div>"
+                "<div class=\"cl\">{}</div></div>",
+                int(ymd.year()), unsigned(ymd.month()), unsigned(ymd.day()), c,
+                100.0 * c / maxc, unsigned(ymd.day()));
+        }
+        out += "</div></div>\n";
+    }
+
+    // Highlights from the global aggregate
+    {
+        auto hcard = [](const char* label, const std::string& name, const std::string& detail) {
+            return std::format("<div class=\"hl\"><div class=\"hl-l\">{}</div>"
+                "<div class=\"hl-n\">{}</div><div class=\"hl-d\">{}</div></div>",
+                label, html_escape(name), html_escape(detail));
+        };
+        std::string hl;
+        if (gs.most_consistent)
+            hl += hcard("Most consistent", gs.most_consistent->name,
+                gs.most_consistent->avg_interval
+                    ? "every " + format_duration(*gs.most_consistent->avg_interval) : "only 1 log");
+        if (gs.most_neglected)
+            hl += hcard("Most neglected", gs.most_neglected->name,
+                gs.most_neglected->avg_interval
+                    ? "every " + format_duration(*gs.most_neglected->avg_interval) : "only 1 log");
+        if (gs.most_logged)
+            hl += hcard("Most logged", gs.most_logged->name,
+                std::format("{} logs", gs.most_logged->log_count));
+        if (gs.best_streak && gs.best_streak->streak > 0 && gs.best_streak->streak_config)
+            hl += hcard("Best streak", gs.best_streak->name,
+                std::format("{} ({})", gs.best_streak->streak,
+                    format_streak_label(*gs.best_streak->streak_config)));
+        if (!hl.empty())
+            out += "<div class=\"highlights\">" + hl + "</div>\n";
+    }
+
+    // Per-habit breakdown
+    if (!habits.empty()) {
+        out += "<div class=\"panel\"><div class=\"panel-title\">Habits</div>";
+        for (const auto& a : habits) {
+            std::string chips = std::format("<span class=\"chip\">{} logs</span>", a.logs.size());
+            if (a.streak)
+                chips += std::format("<span class=\"chip streak\">🔥 {} · {}</span>",
+                    compute_streak(a), format_streak_label(*a.streak));
+            if (auto iv = avg_interval(a))
+                chips += std::format("<span class=\"chip\">every {}</span>", format_duration(*iv));
+            if (auto qs = quantity_stats(a)) {
+                std::string u = a.unit ? " " + *a.unit : "";
+                chips += std::format("<span class=\"chip\">{}{} total</span>", format_amount(qs->total), u);
+                double l = qs->last7, p = qs->prev7;
+                if (l > 0 || p > 0) {
+                    const char* cls = l > p ? "up" : (l < p ? "down" : "flat");
+                    const char* arr = l > p ? "↑" : (l < p ? "↓" : "→");
+                    chips += std::format("<span class=\"chip trend {}\">{} 7d {}{}</span>",
+                        cls, arr, format_amount(l), u);
+                }
+            }
+            out += std::format("<div class=\"hrow\"><div class=\"hname\"><a href=\"{}\">{}</a></div>"
+                "<div class=\"chips\">{}</div></div>", activity_url(a.name), html_escape(a.name), chips);
+        }
+        out += "</div>\n";
+    }
+
+    // Tasks
+    if (!tasks.empty()) {
+        out += std::format("<div class=\"panel\"><div class=\"panel-title\">Tasks · {} done / {} total</div>",
+            gs.task_done, gs.task_total);
+        for (const auto& a : tasks) {
+            std::string chip = a.completed_at
+                ? std::format("<span class=\"chip\" style=\"color:var(--ok); border-color:rgba(70,211,154,.3)\">✓ {}</span>",
+                    format_datetime(*a.completed_at))
+                : std::format("<span class=\"chip\">pending <span data-since=\"{}\">{}</span></span>",
+                    to_epoch(a.logs.front().when), format_elapsed(a.logs.front().when));
+            out += std::format("<div class=\"hrow\"><div class=\"hname\"><a href=\"{}\">{}</a></div>"
+                "<div class=\"chips\">{}</div></div>", activity_url(a.name), html_escape(a.name), chip);
+        }
+        out += "</div>\n";
+    }
+
+    out += page_tail();
+    return out;
+}
+
+// GitHub-style contribution heatmap over the last ~6 months. Columns are weeks
+// (oldest left), rows are Mon→Sun. Intensity tracks the day's amount when the
+// activity logs quantities, otherwise the number of logs that day.
+static std::string render_heatmap(const Activity& a) {
+    using namespace std::chrono;
+
+    struct DayAgg { int count = 0; double amount = 0; bool has_amount = false; };
+    std::map<local_days, DayAgg> per;
+    double best_amount = 0;
+    bool any_amount = false;
+    for (const auto& e : a.logs) {
+        auto& x = per[to_local_days(e.when)];
+        ++x.count;
+        if (e.amount) { x.amount += *e.amount; x.has_amount = true; }
+    }
+    for (const auto& [d, x] : per) {
+        best_amount = std::max(best_amount, x.amount);
+        if (x.has_amount) any_amount = true;
+    }
+
+    auto level = [&](const DayAgg& x) -> int {
+        if (x.count == 0) return 0;
+        if (any_amount && best_amount > 0 && x.has_amount) {
+            double r = x.amount / best_amount;
+            if (r < 0.25) return 1;
+            if (r < 0.50) return 2;
+            if (r < 0.75) return 3;
+            return 4;
+        }
+        return std::min(4, x.count);
+    };
+
+    const int WEEKS = 26;
+    auto today      = to_local_days(now());
+    auto end_week   = week_start(today);
+    auto start_week = end_week - days{7 * (WEEKS - 1)};
+    std::string unit = a.unit ? " " + *a.unit : "";
+
+    static const char* MON[] = {"", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    std::string months, cols;
+    int prev_month = -1;
+    for (int w = 0; w < WEEKS; ++w) {
+        auto col_start = start_week + days{7 * w};
+        int mo = static_cast<int>(unsigned(year_month_day{col_start}.month()));
+        // Label a column only when its month differs from the previous one; the
+        // text overflows rightward across the (empty) following labels.
+        months += (mo != prev_month)
+            ? std::format("<span class=\"cal-m\">{}</span>", MON[mo])
+            : "<span class=\"cal-m\"></span>";
+        prev_month = mo;
+
+        cols += "<div class=\"cal-col\">";
+        for (int dow = 0; dow < 7; ++dow) {
+            auto day = col_start + days{dow};
+            if (day > today) { cols += "<div class=\"cal-cell empty\"></div>"; continue; }
+            DayAgg x;
+            if (auto it = per.find(day); it != per.end()) x = it->second;
+            int lv = level(x);
+            year_month_day ymd{day};
+            std::string tip = std::format("{:04}-{:02}-{:02}",
+                int(ymd.year()), unsigned(ymd.month()), unsigned(ymd.day()));
+            if (x.count == 0) tip += " · no log";
+            else {
+                tip += std::format(" · {} log{}", x.count, x.count > 1 ? "s" : "");
+                if (x.has_amount) tip += " · " + format_amount(x.amount) + unit;
+            }
+            cols += std::format("<div class=\"cal-cell{}\" title=\"{}\"></div>",
+                lv ? std::format(" l{}", lv) : "", tip);
+        }
+        cols += "</div>";
+    }
+
+    std::string out = "<div class=\"panel\"><div class=\"panel-title\">Calendar · last 26 weeks</div>";
+    out += "<div class=\"cal-scroll\"><div class=\"cal-months\">" + months
+         + "</div><div class=\"cal\">" + cols + "</div></div>";
+    out += "<div class=\"cal-legend\">Less"
+           "<span class=\"cal-cell\"></span><span class=\"cal-cell l1\"></span>"
+           "<span class=\"cal-cell l2\"></span><span class=\"cal-cell l3\"></span>"
+           "<span class=\"cal-cell l4\"></span>More</div>";
+    out += "</div>\n";
+    return out;
+}
+
+static std::string render_activity_page(const std::filesystem::path& data_path,
+                                        const std::string& token,
+                                        const std::string& name,
+                                        std::optional<Outcome> flash) {
+    Tracker tracker{data_path};
+    auto found = tracker.find(name);
+
+    std::string out = PAGE_HEAD;
+    if (flash)
+        out += std::format("<div class=\"toast {}\">{}</div>\n",
+                           flash->first ? "ok" : "err", html_escape(flash->second));
+    out += render_header("");
+
+    if (!found) {
+        out += std::format(
+            "<div class=\"detail-head\"><a class=\"back\" href=\"/\">← Dashboard</a></div>"
+            "<p class=\"empty\">No activity named \"{}\". It may have been deleted.</p>\n",
+            html_escape(name));
+        out += page_tail();
+        return out;
+    }
+
+    const Activity& a = *found;
+    const bool is_habit = a.type == ActivityType::Habit;
+    const std::string self = activity_url(a.name);
+    const std::string unit = a.unit ? " " + *a.unit : "";
+
+    bool od = false;
+    for (const auto& o : tracker.overdue_activities())
+        if (o.name == a.name) { od = true; break; }
+
+    // Hero: back link, title, badges
+    std::string badges;
+    if (od) badges += "<span class=\"badge danger\">overdue</span>";
+    if (is_habit && a.streak)
+        badges += std::format("<span class=\"badge streak\">🔥 {} · {}</span>",
+            compute_streak(a), format_streak_label(*a.streak));
+    if (is_habit && a.alert_after)
+        badges += std::format("<span class=\"badge\">⏰ {}</span>", format_duration(*a.alert_after));
+    if (!is_habit)
+        badges += a.completed_at ? "<span class=\"badge ok\">done</span>"
+                                 : "<span class=\"badge\">task</span>";
+    if (a.unit)   badges += std::format("<span class=\"badge\">unit: {}</span>", html_escape(*a.unit));
+    if (a.target) badges += std::format("<span class=\"badge\">target: {}</span>", format_amount(*a.target));
+
+    out += std::format(
+        "<div class=\"detail-head\"><a class=\"back\" href=\"/\">← Dashboard</a>"
+        "<div class=\"detail-title\">{}</div>"
+        "<div class=\"badges\" style=\"justify-content:flex-start\">{}</div></div>\n",
+        html_escape(a.name), badges);
+
+    // Big live timer / status
+    if (is_habit || !a.completed_at) {
+        auto since = is_habit ? last_done(a) : a.logs.front().when;
+        out += std::format("<div class=\"timer{}\" data-since=\"{}\">{}</div>",
+            od ? " over" : "", to_epoch(since), format_elapsed(since));
+        out += std::format("<div class=\"sub\" style=\"margin-bottom:1.3rem\">{} {}</div>\n",
+            is_habit ? "last done" : "added", format_datetime(since));
+    } else {
+        out += "<div class=\"timer done\">✓ completed</div>";
+        out += std::format("<div class=\"sub\" style=\"margin-bottom:1.3rem\">done {} · added {}</div>\n",
+            format_datetime(*a.completed_at), format_datetime(a.logs.front().when));
+    }
+
+    // Stat cards (auto-fit, so any count looks tidy)
+    {
+        std::string cards = std::format(
+            "<div class=\"stat\"><div class=\"n\">{}</div><div class=\"l\">Total logs</div></div>", a.logs.size());
+        if (is_habit && a.streak)
+            cards += std::format(
+                "<div class=\"stat\"><div class=\"n\">🔥 {}</div><div class=\"l\">Current streak</div></div>",
+                compute_streak(a));
+        if (auto iv = avg_interval(a))
+            cards += std::format(
+                "<div class=\"stat\"><div class=\"n\">{}</div><div class=\"l\">Avg interval</div></div>",
+                format_duration(*iv));
+        if (auto qs = quantity_stats(a))
+            cards += std::format(
+                "<div class=\"stat\"><div class=\"n\">{}{}</div><div class=\"l\">Total logged</div></div>",
+                format_amount(qs->total), unit);
+        out += "<div class=\"dstats\">" + cards + "</div>\n";
+    }
+
+    // Progress toward a target
+    if (a.target)
+        out += "<div class=\"panel\"><div class=\"panel-title\">Progress</div>" + progress_bar(a) + "</div>\n";
+
+    // Calendar heatmap
+    out += render_heatmap(a);
+
+    // Quantity breakdown
+    if (auto qs = quantity_stats(a)) {
+        auto cell = [](const char* l, const std::string& v) {
+            return std::format("<div class=\"hl\"><div class=\"hl-l\">{}</div><div class=\"hl-n\">{}</div></div>", l, v);
+        };
+        std::string g;
+        g += cell("Total",      format_amount(qs->total) + unit);
+        g += cell("Avg / log",  format_amount(qs->avg_per_log) + unit);
+        g += cell("Avg / day",  format_amount(qs->avg_per_day) + unit);
+        g += cell("Best day",   format_amount(qs->best_day) + unit);
+        g += cell("Max single", format_amount(qs->max_single) + unit);
+        double l = qs->last7, p = qs->prev7;
+        const char* arr = l > p ? "↑" : (l < p ? "↓" : "→");
+        g += cell("Last 7 days", std::format("{} {}{}", arr, format_amount(l), unit));
+        out += "<div class=\"panel\"><div class=\"panel-title\">Quantity</div>"
+               "<div class=\"highlights\" style=\"margin-bottom:0\">" + g + "</div></div>\n";
+    }
+
+    // History — newest first, capped so a long log doesn't blow up the page
+    {
+        out += std::format("<div class=\"panel\"><div class=\"panel-title\">History · {} log{}</div>",
+            a.logs.size(), a.logs.size() == 1 ? "" : "s");
+        const size_t CAP = 30;
+        size_t shown = 0;
+        for (auto it = a.logs.rbegin(); it != a.logs.rend() && shown < CAP; ++it, ++shown) {
+            std::string amt = it->amount
+                ? std::format("<span class=\"chip\">{}{}</span>", format_amount(*it->amount), unit) : "";
+            out += std::format(
+                "<div class=\"hrow\"><div class=\"hname\" style=\"font-weight:500\">{}</div>"
+                "<div class=\"chips\">{}</div></div>",
+                html_escape(format_datetime(it->when)), amt);
+        }
+        if (a.logs.size() > CAP)
+            out += std::format("<div class=\"hl-d\" style=\"margin-top:.7rem\">… and {} earlier</div>",
+                a.logs.size() - CAP);
+        out += "</div>\n";
+    }
+
+    // Actions — same controls as the dashboard, but they return here via `next`
+    {
+        std::string actions;
+        if (is_habit) {
+            actions += make_form(token, self, "/log", a.name,
+                "<input class=\"in sm\" name=\"amount\" placeholder=\"amt\">"
+                "<input class=\"in sm\" name=\"ago\" placeholder=\"ago\">"
+                "<button class=\"btn primary\">Log</button>");
+        } else if (!a.completed_at) {
+            actions += make_form(token, self, "/done", a.name, "<button class=\"btn primary\">Mark done</button>");
+            actions += make_form(token, self, "/log", a.name,
+                "<input class=\"in sm\" name=\"amount\" placeholder=\"amt\"><button class=\"btn ghost\">Log progress</button>");
+        }
+        if (a.logs.size() > 1)
+            actions += make_form(token, self, "/unlog", a.name, "<button class=\"btn ghost\">Unlog</button>");
+
+        out += "<div class=\"panel\"><div class=\"panel-title\">Actions</div>"
+               "<div class=\"actions\">" + actions + "</div>"
+             + manage_controls(token, self, a, is_habit) + "</div>\n";
+    }
+
+    out += page_tail();
     return out;
 }
 
@@ -458,10 +925,15 @@ void run_web(const std::filesystem::path& data_path, int port) {
     const std::string token = make_token();
     std::mutex write_mtx; // serialize the load-modify-save in mutating handlers
 
-    // Redirect back to the dashboard with a flash message (Post/Redirect/Get).
-    auto finish = [](httplib::Response& res, bool ok, const std::string& msg) {
+    // Post/Redirect/Get: bounce back with a flash message. `next` lets a detail
+    // page return to itself; we only honour our own paths to avoid open redirects.
+    auto finish = [](httplib::Response& res, bool ok, const std::string& msg,
+                     const std::string& next) {
+        std::string base = (next == "/" || next.rfind("/activity?", 0) == 0) ? next : "/";
+        char sep = base.find('?') == std::string::npos ? '?' : '&';
         res.status = 303;
-        res.set_header("Location", std::format("/?{}={}", ok ? "ok" : "err", url_encode(msg)));
+        res.set_header("Location",
+            std::format("{}{}{}={}", base, sep, ok ? "ok" : "err", url_encode(msg)));
     };
 
     // Reject any POST without the matching session token (blocks cross-site posts).
@@ -473,14 +945,15 @@ void run_web(const std::filesystem::path& data_path, int port) {
     };
 
     // Run a mutation under the lock and turn its Outcome into a redirect.
-    auto run = [&](httplib::Response& res, auto&& fn) {
+    auto run = [&](const httplib::Request& req, httplib::Response& res, auto&& fn) {
+        std::string next = req.has_param("next") ? req.get_param_value("next") : "/";
         std::lock_guard<std::mutex> lock(write_mtx);
         try {
             Tracker t{data_path};
             auto [ok, msg] = fn(t);
-            finish(res, ok, msg);
+            finish(res, ok, msg, next);
         } catch (const std::exception& e) {
-            finish(res, false, std::string("Error: ") + e.what());
+            finish(res, false, std::string("Error: ") + e.what(), next);
         }
     };
 
@@ -503,9 +976,32 @@ void run_web(const std::filesystem::path& data_path, int port) {
         }
     });
 
+    svr.Get("/stats", [&](const httplib::Request&, httplib::Response& res) {
+        try {
+            res.set_content(render_stats_page(data_path), "text/html; charset=utf-8");
+        } catch (const std::exception& e) {
+            res.status = 500;
+            res.set_content(std::format("Error: {}", e.what()), "text/plain");
+        }
+    });
+
+    svr.Get("/activity", [&](const httplib::Request& req, httplib::Response& res) {
+        std::string name = req.get_param_value("name");
+        std::optional<Outcome> flash;
+        if (req.has_param("ok"))  flash = Outcome{true,  req.get_param_value("ok")};
+        else if (req.has_param("err")) flash = Outcome{false, req.get_param_value("err")};
+        try {
+            res.set_content(render_activity_page(data_path, token, name, flash),
+                            "text/html; charset=utf-8");
+        } catch (const std::exception& e) {
+            res.status = 500;
+            res.set_content(std::format("Error: {}", e.what()), "text/plain");
+        }
+    });
+
     svr.Post("/add", [&](const httplib::Request& req, httplib::Response& res) {
         if (!guard(req, res)) return;
-        run(res, [&](Tracker& t) -> Outcome {
+        run(req, res, [&](Tracker& t) -> Outcome {
             std::string name = trim(req.get_param_value("name"));
             if (name.empty()) return {false, "Name is required."};
             bool is_task = req.get_param_value("type") == "task";
@@ -539,7 +1035,7 @@ void run_web(const std::filesystem::path& data_path, int port) {
 
     svr.Post("/log", [&](const httplib::Request& req, httplib::Response& res) {
         if (!guard(req, res)) return;
-        run(res, [&](Tracker& t) -> Outcome {
+        run(req, res, [&](Tracker& t) -> Outcome {
             std::string name = req.get_param_value("name");
             std::optional<double> amount;
             if (auto v = opt_field(req, "amount")) {
@@ -560,7 +1056,7 @@ void run_web(const std::filesystem::path& data_path, int port) {
 
     svr.Post("/unlog", [&](const httplib::Request& req, httplib::Response& res) {
         if (!guard(req, res)) return;
-        run(res, [&](Tracker& t) -> Outcome {
+        run(req, res, [&](Tracker& t) -> Outcome {
             std::string name = req.get_param_value("name");
             return t.unlog(name)
                 ? Outcome{true, "Cancelled last log for \"" + name + "\"."}
@@ -570,7 +1066,7 @@ void run_web(const std::filesystem::path& data_path, int port) {
 
     svr.Post("/done", [&](const httplib::Request& req, httplib::Response& res) {
         if (!guard(req, res)) return;
-        run(res, [&](Tracker& t) -> Outcome {
+        run(req, res, [&](Tracker& t) -> Outcome {
             std::string name = req.get_param_value("name");
             return t.done(name)
                 ? Outcome{true, "\"" + name + "\" completed."}
@@ -580,7 +1076,7 @@ void run_web(const std::filesystem::path& data_path, int port) {
 
     svr.Post("/delete", [&](const httplib::Request& req, httplib::Response& res) {
         if (!guard(req, res)) return;
-        run(res, [&](Tracker& t) -> Outcome {
+        run(req, res, [&](Tracker& t) -> Outcome {
             std::string name = req.get_param_value("name");
             return t.remove(name)
                 ? Outcome{true, "Removed \"" + name + "\"."}
@@ -590,7 +1086,7 @@ void run_web(const std::filesystem::path& data_path, int port) {
 
     svr.Post("/setalarm", [&](const httplib::Request& req, httplib::Response& res) {
         if (!guard(req, res)) return;
-        run(res, [&](Tracker& t) -> Outcome {
+        run(req, res, [&](Tracker& t) -> Outcome {
             std::string name = req.get_param_value("name");
             auto v = opt_field(req, "dur");
             if (!v) return {false, "Enter a duration like 3d or 12h."};
@@ -604,7 +1100,7 @@ void run_web(const std::filesystem::path& data_path, int port) {
 
     svr.Post("/delalarm", [&](const httplib::Request& req, httplib::Response& res) {
         if (!guard(req, res)) return;
-        run(res, [&](Tracker& t) -> Outcome {
+        run(req, res, [&](Tracker& t) -> Outcome {
             std::string name = req.get_param_value("name");
             return t.delalarm(name)
                 ? Outcome{true, "Alarm removed for \"" + name + "\"."}
@@ -614,7 +1110,7 @@ void run_web(const std::filesystem::path& data_path, int port) {
 
     svr.Post("/setstreak", [&](const httplib::Request& req, httplib::Response& res) {
         if (!guard(req, res)) return;
-        run(res, [&](Tracker& t) -> Outcome {
+        run(req, res, [&](Tracker& t) -> Outcome {
             std::string name = req.get_param_value("name");
             auto v = opt_field(req, "streak");
             if (!v) return {false, "Enter a streak like daily or 3d."};
@@ -628,7 +1124,7 @@ void run_web(const std::filesystem::path& data_path, int port) {
 
     svr.Post("/delstreak", [&](const httplib::Request& req, httplib::Response& res) {
         if (!guard(req, res)) return;
-        run(res, [&](Tracker& t) -> Outcome {
+        run(req, res, [&](Tracker& t) -> Outcome {
             std::string name = req.get_param_value("name");
             return t.delstreak(name)
                 ? Outcome{true, "Streak removed for \"" + name + "\"."}
@@ -638,7 +1134,7 @@ void run_web(const std::filesystem::path& data_path, int port) {
 
     svr.Post("/setunit", [&](const httplib::Request& req, httplib::Response& res) {
         if (!guard(req, res)) return;
-        run(res, [&](Tracker& t) -> Outcome {
+        run(req, res, [&](Tracker& t) -> Outcome {
             std::string name = req.get_param_value("name");
             auto v = opt_field(req, "unit");
             if (!v) return {false, "Enter a unit like km or pages."};
@@ -650,7 +1146,7 @@ void run_web(const std::filesystem::path& data_path, int port) {
 
     svr.Post("/delunit", [&](const httplib::Request& req, httplib::Response& res) {
         if (!guard(req, res)) return;
-        run(res, [&](Tracker& t) -> Outcome {
+        run(req, res, [&](Tracker& t) -> Outcome {
             std::string name = req.get_param_value("name");
             return t.delunit(name)
                 ? Outcome{true, "Unit removed for \"" + name + "\"."}
@@ -660,7 +1156,7 @@ void run_web(const std::filesystem::path& data_path, int port) {
 
     svr.Post("/settarget", [&](const httplib::Request& req, httplib::Response& res) {
         if (!guard(req, res)) return;
-        run(res, [&](Tracker& t) -> Outcome {
+        run(req, res, [&](Tracker& t) -> Outcome {
             std::string name = req.get_param_value("name");
             auto v = opt_field(req, "target");
             if (!v) return {false, "Enter a target number."};
@@ -674,7 +1170,7 @@ void run_web(const std::filesystem::path& data_path, int port) {
 
     svr.Post("/deltarget", [&](const httplib::Request& req, httplib::Response& res) {
         if (!guard(req, res)) return;
-        run(res, [&](Tracker& t) -> Outcome {
+        run(req, res, [&](Tracker& t) -> Outcome {
             std::string name = req.get_param_value("name");
             return t.deltarget(name)
                 ? Outcome{true, "Target removed for \"" + name + "\"."}
