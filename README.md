@@ -17,7 +17,7 @@ meditation             2026-06-25 09:00:00   5h 47m 12s        -
 - C++23 compiler (GCC ≥ 14, Clang ≥ 17)
 - CMake ≥ 3.20
 
-Dependencies are fetched automatically by CMake ([nlohmann/json](https://github.com/nlohmann/json)).
+Dependencies are fetched automatically by CMake ([nlohmann/json](https://github.com/nlohmann/json) and [cpp-httplib](https://github.com/yhirose/cpp-httplib) for the web dashboard).
 
 ## Build & install
 
@@ -70,8 +70,37 @@ Requires `notify-send` (included in most GNOME/KDE setups).
 | `overdue settarget <name> <n>` | Set a goal for accumulated amount |
 | `overdue deltarget <name>` | Remove the target |
 | `overdue check` | Send desktop notifications for all overdue habits |
+| `overdue web [--port <n>]` | Open an interactive dashboard in your browser (default `:8080`) |
 
 Activity names can be multi-word without quotes: `overdue add brush teeth`
+
+### Web dashboard
+
+`overdue web` starts a tiny local server and opens a dashboard in your browser. It exposes
+**every action the CLI has** — no terminal needed:
+
+- summary cards: habits, total logs, tasks done, overdue
+- add habits or tasks (with optional unit, target, alarm, streak)
+- per-entry buttons: log (with optional amount and "ago"), unlog, mark task done, delete
+- per-entry **Manage** panel: set/remove alarm, streak, unit, and target
+- **live-ticking "since last done" timers** (updated every second in the browser), progress
+  bars toward targets, streak/alarm badges, and overdue cards highlighted in red
+
+The page also refreshes its data every 30 seconds, pausing automatically while you're typing
+in a field or have a panel open so it never interrupts you.
+
+```bash
+overdue web              # serve on http://127.0.0.1:8080 and open the browser
+overdue web --port 9000  # pick a different port
+```
+
+Every change is written straight to the same `data.json` the CLI uses, so the two stay in
+sync. Press `Ctrl+C` to stop the server.
+
+**Safety:** the server binds to loopback (`127.0.0.1`) only, so it is never exposed on the
+network. Each session also mints a random token that every form must include, which stops
+other sites open in your browser from driving the dashboard behind your back. Concurrent
+edits are serialized so two quick actions can't clobber each other.
 
 ### Quantities
 

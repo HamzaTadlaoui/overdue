@@ -1,5 +1,6 @@
 #include "tracker.hpp"
 #include "stats.hpp"
+#include "web.hpp"
 #include <cstdio>
 #include <iostream>
 #include <print>
@@ -48,6 +49,7 @@ static void print_usage() {
     std::println("  overdue settarget <name> <n>    Set a goal for accumulated amount");
     std::println("  overdue deltarget <name>        Remove the target");
     std::println("  overdue check                   Send notifications for overdue habits");
+    std::println("  overdue web [--port <n>]        Open a dashboard in your browser (default :8080)");
     std::println("  overdue setstreak <name> <s>    Set streak (daily/weekly/monthly/3d...)");
     std::println("  overdue delstreak <name>        Remove streak tracking");
     std::println("  overdue stats [name]            Global stats, or detail for one entry");
@@ -376,6 +378,22 @@ int main(int argc, char* argv[]) {
                 notify(std::format("overdue: {}", a.name),
                        std::format("{} since last done (alarm: {})", elapsed, threshold));
             }
+        }
+        else if (cmd == "web") {
+            int port = 8080;
+            for (int i = 2; i < argc; ++i) {
+                std::string arg = argv[i];
+                if (arg == "--port" && i + 1 < argc) {
+                    auto p = parse_amount(argv[++i]);
+                    if (!p || *p < 1 || *p > 65535 || *p != std::floor(*p)) {
+                        std::println(stderr, "Invalid port. Expected an integer 1-65535."); return 1;
+                    }
+                    port = static_cast<int>(*p);
+                } else {
+                    std::println(stderr, "Usage: overdue web [--port <n>]"); return 1;
+                }
+            }
+            run_web(Storage::default_path(), port);
         }
         else if (cmd == "stats" && argc >= 3) {
             auto name = join_args(std::span(argv + 2, argc - 2));
