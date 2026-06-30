@@ -1,6 +1,7 @@
 #include "web.hpp"
 #include "tracker.hpp"
 #include "stats.hpp"
+#include "config.hpp"
 
 #include <httplib.h>
 
@@ -19,6 +20,12 @@
 #include <unistd.h>
 
 using Outcome = std::pair<bool, std::string>; // {ok, message}
+
+// The web server reads from the same data as the CLI; load the configured unlog
+// grace so its Tracker instances purge expired tombstones with the same window.
+static long long web_grace_secs() {
+    return Config::load(Config::default_path()).unlog_grace_secs;
+}
 
 // Activity names and units are user-controlled and rendered into the page, so
 // escape them even though the server only ever binds to loopback.
@@ -404,7 +411,7 @@ static std::string render_page(const std::filesystem::path& data_path,
                                const std::string& token,
                                std::optional<Outcome> flash) {
     // Reload on every request so the page reflects edits from the CLI or other tabs.
-    Tracker tracker{data_path};
+    Tracker tracker{data_path, web_grace_secs()};
     auto habits  = tracker.habits();
     auto tasks   = tracker.tasks(/*include_done=*/true);
     auto overdue = tracker.overdue_activities();
@@ -551,7 +558,7 @@ static std::string render_page(const std::filesystem::path& data_path,
 }
 
 static std::string render_stats_page(const std::filesystem::path& data_path) {
-    Tracker tracker{data_path};
+    Tracker tracker{data_path, web_grace_secs()};
     const auto& all = tracker.all();
     auto gs      = compute_global(all);
     auto habits  = tracker.habits();
@@ -771,7 +778,7 @@ static std::string render_activity_page(const std::filesystem::path& data_path,
                                         const std::string& token,
                                         const std::string& name,
                                         std::optional<Outcome> flash) {
-    Tracker tracker{data_path};
+    Tracker tracker{data_path, web_grace_secs()};
     auto found = tracker.find(name);
 
     std::string out = PAGE_HEAD;
@@ -949,7 +956,7 @@ void run_web(const std::filesystem::path& data_path, int port) {
         std::string next = req.has_param("next") ? req.get_param_value("next") : "/";
         std::lock_guard<std::mutex> lock(write_mtx);
         try {
-            Tracker t{data_path};
+            Tracker t{data_path, web_grace_secs()};
             auto [ok, msg] = fn(t);
             finish(res, ok, msg, next);
         } catch (const std::exception& e) {

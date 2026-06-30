@@ -21,10 +21,19 @@ struct LogEntry {
     std::optional<double> amount; // nullopt = presence-only log
 };
 
+// A log that was unlogged but not yet purged: kept out of Activity::logs so all
+// stats/streak/web read paths see only active logs, but recoverable until the
+// grace window (Config::unlog_grace_secs) elapses.
+struct UnloggedEntry {
+    LogEntry entry;                                    // original when + amount
+    std::chrono::system_clock::time_point unlogged_at; // when unlog happened
+};
+
 struct Activity {
     std::string name;
     ActivityType type = ActivityType::Habit;
     std::vector<LogEntry> logs;
+    std::vector<UnloggedEntry> unlogged; // soft-deleted logs pending purge
     std::optional<std::chrono::system_clock::time_point> completed_at;
     std::optional<long long> alert_after;
     std::optional<StreakConfig> streak;

@@ -30,6 +30,7 @@ add_executable(overdue
     src/main.cpp
     src/tracker.cpp
     src/storage.cpp
+    src/config.cpp
     src/web.cpp
 )
 

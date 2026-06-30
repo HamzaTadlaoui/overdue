@@ -1,5 +1,6 @@
 #include "tracker.hpp"
 #include "stats.hpp"
+#include "config.hpp"
 #include "web.hpp"
 #include <cstdio>
 #include <iostream>
@@ -36,7 +37,9 @@ static void print_usage() {
     std::println("  overdue log <name> --ago <dur>  Mark as done X time ago (2h, 1d6h...)");
     std::println("  overdue log <name> --at <date>  Mark as done at date (2026-06-22T08:15)");
     std::println("  overdue log <name> --amount <n> Record a quantity with the log");
-    std::println("  overdue unlog <name>            Cancel the last log");
+    std::println("  overdue unlog <name>            Cancel the last log (recoverable for a grace period)");
+    std::println("  overdue logs <name>             List all logs with ids and unlogged status");
+    std::println("  overdue relog <name> <id>       Restore an unlogged entry by its id");
     std::println("  overdue done <name>             Mark a task as completed");
     std::println("  overdue list                    Show habits and active tasks");
     std::println("  overdue list --done             Also show completed tasks");
@@ -53,13 +56,16 @@ static void print_usage() {
     std::println("  overdue setstreak <name> <s>    Set streak (daily/weekly/monthly/3d...)");
     std::println("  overdue delstreak <name>        Remove streak tracking");
     std::println("  overdue stats [name]            Global stats, or detail for one entry");
+    std::println("  overdue config                  Show settings");
+    std::println("  overdue config set <k> <v>      Change a setting (e.g. unlog-grace 24h)");
 }
 
 int main(int argc, char* argv[]) {
     if (argc < 2) { print_usage(); return 0; }
 
     try {
-        Tracker tracker{Storage::default_path()};
+        Config cfg = Config::load(Config::default_path());
+        Tracker tracker{Storage::default_path(), cfg.unlog_grace_secs};
         std::string cmd = argv[1];
 
         if (cmd == "add") {
@@ -193,7 +199,55 @@ int main(int argc, char* argv[]) {
             if (!tracker.unlog(name))
                 std::println(stderr, "\"{}\" not found or no previous log to restore.", name);
             else
-                std::println("✓ Last log for \"{}\" cancelled.", name);
+                std::println("✓ Last log for \"{}\" unlogged — restore within {} via 'overdue logs/relog'.",
+                    name, format_duration(cfg.unlog_grace_secs));
+        }
+        else if (cmd == "logs") {
+            if (argc < 3) { std::println(stderr, "Usage: overdue logs <name>"); return 1; }
+            auto name = join_args(std::span(argv + 2, argc - 2));
+            auto a = tracker.find(name);
+            if (!a) { std::println(stderr, "\"{}\" not found.", name); return 1; }
+
+            auto rows = tracker.log_rows(name);
+            std::string u = a->unit ? " " + *a->unit : "";
+            std::println("{:<4} {:<21} {:<12} {}", "id", "When", "Amount", "Status");
+            std::println("{}", std::string(72, '-'));
+            int id = 1;
+            for (const auto& r : rows) {
+                std::string amt = r.entry.amount ? format_amount(*r.entry.amount) + u : "-";
+                std::string status = "active";
+                if (r.unlogged_at) {
+                    auto age = std::chrono::duration_cast<std::chrono::seconds>(now() - *r.unlogged_at).count();
+                    long long remaining = cfg.unlog_grace_secs - age;
+                    status = std::format("unlogged {} ago · restorable for {}",
+                        format_elapsed(*r.unlogged_at), format_duration(remaining > 0 ? remaining : 0));
+                }
+                std::println("{:<4} {:<21} {:<12} {}", id++, format_datetime(r.entry.when), amt, status);
+            }
+        }
+        else if (cmd == "relog") {
+            if (argc < 4) { std::println(stderr, "Usage: overdue relog <name> <id>"); return 1; }
+            std::string id_str = argv[argc - 1];
+            int id = 0;
+            try {
+                std::size_t pos = 0;
+                id = std::stoi(id_str, &pos);
+                if (pos != id_str.size()) throw std::invalid_argument("trailing");
+            } catch (...) {
+                std::println(stderr, "Invalid id \"{}\". Use the id from 'overdue logs <name>'.", id_str);
+                return 1;
+            }
+            auto name = join_args(std::span(argv + 2, argc - 3));
+            switch (tracker.relog(name, id)) {
+                case RelogResult::Ok:
+                    std::println("✓ Restored log #{} for \"{}\".", id, name); break;
+                case RelogResult::NotFound:
+                    std::println(stderr, "\"{}\" not found.", name); return 1;
+                case RelogResult::BadId:
+                    std::println(stderr, "No log with id {} for \"{}\". See 'overdue logs {}'.", id, name, name); return 1;
+                case RelogResult::NotUnlogged:
+                    std::println(stderr, "Log #{} for \"{}\" is active, not unlogged — nothing to restore.", id, name); return 1;
+            }
         }
         else if (cmd == "done") {
             if (argc < 3) { std::println(stderr, "Usage: overdue done <name>"); return 1; }
@@ -460,6 +514,31 @@ int main(int argc, char* argv[]) {
                 auto& h = *gs.best_streak;
                 std::println("  Best streak:      {:<20} {} ({})", h.name, h.streak,
                     format_streak_label(*h.streak_config));
+            }
+        }
+        else if (cmd == "config") {
+            auto cfg_path = Config::default_path();
+            if (argc >= 4 && std::string(argv[2]) == "set") {
+                std::string key = argv[3];
+                if (key == "unlog-grace") {
+                    if (argc < 5) { std::println(stderr, "Usage: overdue config set unlog-grace <dur>"); return 1; }
+                    auto dur = parse_duration(argv[4]);
+                    if (!dur) { std::println(stderr, "Invalid duration \"{}\". Examples: 24h, 1d, 30m", argv[4]); return 1; }
+                    cfg.unlog_grace_secs = *dur;
+                    Config::save(cfg_path, cfg);
+                    std::println("✓ unlog-grace set to {}", format_duration(*dur));
+                } else {
+                    std::println(stderr, "Unknown setting \"{}\". Known settings: unlog-grace", key);
+                    return 1;
+                }
+            } else if (argc == 2) {
+                std::println("Configuration");
+                std::println("{}", std::string(40, '-'));
+                std::println("  unlog-grace: {}   (window to restore an unlogged entry)",
+                    format_duration(cfg.unlog_grace_secs));
+            } else {
+                std::println(stderr, "Usage: overdue config | overdue config set unlog-grace <dur>");
+                return 1;
             }
         }
         else {

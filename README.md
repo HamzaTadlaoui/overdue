@@ -56,7 +56,9 @@ Requires `notify-send` (included in most GNOME/KDE setups).
 | `overdue log <name> --ago <dur>` | Mark as done X time ago |
 | `overdue log <name> --at <datetime>` | Mark as done at a specific date/time |
 | `overdue log <name> --amount <n>` | Record a quantity with the log |
-| `overdue unlog <name>` | Cancel the last log |
+| `overdue unlog <name>` | Cancel the last log (recoverable for a grace period) |
+| `overdue logs <name>` | List all logs for an entry with ids and unlogged status |
+| `overdue relog <name> <id>` | Restore an unlogged entry by its id |
 | `overdue done <name>` | Mark a task as completed (archives it) |
 | `overdue list` | Show habits and active tasks |
 | `overdue list --done` | Also show completed tasks |
@@ -71,6 +73,8 @@ Requires `notify-send` (included in most GNOME/KDE setups).
 | `overdue deltarget <name>` | Remove the target |
 | `overdue check` | Send desktop notifications for all overdue habits |
 | `overdue web [--port <n>]` | Open an interactive dashboard in your browser (default `:8080`) |
+| `overdue config` | Show settings |
+| `overdue config set <key> <value>` | Change a setting (e.g. `unlog-grace 24h`) |
 
 Activity names can be multi-word without quotes: `overdue add brush teeth`
 
@@ -107,6 +111,37 @@ sync. Press `Ctrl+C` to stop the server.
 network. Each session also mints a random token that every form must include, which stops
 other sites open in your browser from driving the dashboard behind your back. Concurrent
 edits are serialized so two quick actions can't clobber each other.
+
+### Undoing an unlog
+
+`unlog` doesn't delete anything — it *flags* the most recent log as unlogged and removes it
+from your active history (so streaks, stats, and the dashboard immediately ignore it). The
+entry stays recoverable for a grace period (default **24h**), then it's purged for good.
+
+`overdue logs <name>` shows every log with an id and its status, so you can spot and recover a
+mistake:
+
+```
+id   When                  Amount    Status
+--------------------------------------------------------------
+1    2026-06-28 07:30:00   5 km      active
+2    2026-06-29 07:45:00   6 km      active
+3    2026-06-30 08:10:00   7 km      unlogged 4m ago · restorable for 23h
+```
+
+```bash
+overdue unlog running        # flag the last log (recoverable)
+overdue logs running         # find the id of the unlogged entry
+overdue relog running 3      # restore it
+```
+
+The grace period is a setting — make it longer if you want a bigger safety net, or near-zero
+to keep unlog effectively permanent:
+
+```bash
+overdue config                          # show current settings
+overdue config set unlog-grace 7d       # a week to catch mistakes
+```
 
 ### Quantities
 
@@ -145,7 +180,9 @@ Combine units freely: `3d`, `12h`, `30m`, `1d6h`, `1d6h30m`
 
 ## Data
 
-All logs are stored in `~/.local/share/overdue/data.json`, written atomically (temp file + rename) so a crash can't corrupt it. Every log entry is preserved — full history, never overwritten — which is what powers streaks and stats. Each log is `{ "t": <unix>, "q": <amount?> }`; older files that stored bare timestamps are upgraded automatically on the next write.
+All logs are stored in `~/.local/share/overdue/data.json`, written atomically (temp file + rename) so a crash can't corrupt it. Every log entry is preserved — full history, never overwritten — which is what powers streaks and stats. Each log is `{ "t": <unix>, "q": <amount?> }`; older files that stored bare timestamps are upgraded automatically on the next write. Unlogged-but-not-yet-purged entries are kept in a per-activity `"unlogged"` array (each carrying its original log plus the unlog time) until their grace period elapses.
+
+Settings live alongside it in `~/.local/share/overdue/config.json` (currently just `unlog_grace_secs`). The file is optional — defaults apply if it's missing.
 
 ---
 

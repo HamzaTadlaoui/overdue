@@ -36,6 +36,13 @@ std::vector<Activity> Storage::load(const std::filesystem::path& path) {
         }
         if (a.logs.empty())
             throw std::runtime_error("Activity \"" + a.name + "\" has no logs — data may be corrupted");
+        if (item.contains("unlogged")) {
+            for (const auto& u : item["unlogged"]) {
+                LogEntry e{from_unix(u["t"].get<long long>()), std::nullopt};
+                if (u.contains("q")) e.amount = u["q"].get<double>();
+                a.unlogged.push_back(UnloggedEntry{e, from_unix(u["u"].get<long long>())});
+            }
+        }
         if (item.contains("completed_at"))
             a.completed_at = from_unix(item["completed_at"].get<long long>());
         if (item.contains("alert_after"))
@@ -78,6 +85,15 @@ void Storage::save(const std::filesystem::path& path, const std::vector<Activity
             {"type", a.type == ActivityType::Task ? "task" : "habit"},
             {"logs", logs}
         };
+        if (!a.unlogged.empty()) {
+            json un = json::array();
+            for (const auto& u : a.unlogged) {
+                json ue = {{"t", to_unix(u.entry.when)}, {"u", to_unix(u.unlogged_at)}};
+                if (u.entry.amount) ue["q"] = *u.entry.amount;
+                un.push_back(ue);
+            }
+            entry["unlogged"] = un;
+        }
         if (a.completed_at)
             entry["completed_at"] = to_unix(*a.completed_at);
         if (a.alert_after)

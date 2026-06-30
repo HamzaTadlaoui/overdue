@@ -4,9 +4,17 @@
 #include <optional>
 #include <vector>
 
+// One row of an activity's full log history, as shown by `overdue logs`.
+struct LogRow {
+    LogEntry entry;
+    std::optional<std::chrono::system_clock::time_point> unlogged_at; // set => soft-deleted
+};
+
+enum class RelogResult { Ok, NotFound, BadId, NotUnlogged };
+
 class Tracker {
 public:
-    explicit Tracker(std::filesystem::path data_path);
+    explicit Tracker(std::filesystem::path data_path, long long unlog_grace_secs = 86400);
 
     bool add(const std::string& name,
              std::optional<long long> alarm = std::nullopt,
@@ -22,6 +30,10 @@ public:
              std::optional<std::chrono::system_clock::time_point> when = std::nullopt,
              std::optional<double> amount = std::nullopt);
     bool unlog(const std::string& name);
+    // Full merged history (active + unlogged), sorted oldest-first; row index + 1
+    // is the id used by `relog`. Empty if the activity is not found.
+    std::vector<LogRow> log_rows(const std::string& name) const;
+    RelogResult relog(const std::string& name, int id);
     bool done(const std::string& name);
     bool remove(const std::string& name);
     bool setalarm(const std::string& name, long long seconds);
@@ -39,7 +51,10 @@ public:
 
 private:
     std::filesystem::path path_;
+    long long unlog_grace_secs_;
     std::vector<Activity> activities_;
 
+    // Drop unlogged entries past the grace window. Returns true if any were purged.
+    bool purge_expired();
     void save() const;
 };
