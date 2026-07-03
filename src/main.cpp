@@ -3,6 +3,7 @@
 #include "config.hpp"
 #include "web.hpp"
 #include <cstdio>
+#include <cstdlib>
 #include <iostream>
 #include <print>
 #include <span>
@@ -16,6 +17,21 @@ static std::string join_args(std::span<char*> args) {
         result += arg;
     }
     return result;
+}
+
+// Expand a leading "~" or "~/" to $HOME so config paths can be given tersely.
+static std::filesystem::path expand_home(const std::string& s) {
+    if (s == "~" || s.rfind("~/", 0) == 0) {
+        if (const char* home = std::getenv("HOME"))
+            return std::filesystem::path(home) / (s.size() > 2 ? s.substr(2) : "");
+    }
+    return s;
+}
+
+static std::optional<bool> parse_bool(const std::string& s) {
+    if (s == "on"  || s == "true"  || s == "yes" || s == "1") return true;
+    if (s == "off" || s == "false" || s == "no"  || s == "0") return false;
+    return std::nullopt;
 }
 
 static void notify(const std::string& title, const std::string& body) {
@@ -56,8 +72,8 @@ static void print_usage() {
     std::println("  overdue setstreak <name> <s>    Set streak (daily/weekly/monthly/3d...)");
     std::println("  overdue delstreak <name>        Remove streak tracking");
     std::println("  overdue stats [name]            Global stats, or detail for one entry");
-    std::println("  overdue config                  Show settings");
-    std::println("  overdue config set <k> <v>      Change a setting (e.g. unlog-grace 24h)");
+    std::println("  overdue config                  Show settings and config file path");
+    std::println("  overdue config set <k> <v>      Set data-dir|unlog-grace|web-port|date-format|notify");
 }
 
 int main(int argc, char* argv[]) {
@@ -65,7 +81,8 @@ int main(int argc, char* argv[]) {
 
     try {
         Config cfg = Config::load(Config::default_path());
-        Tracker tracker{Storage::default_path(), cfg.unlog_grace_secs};
+        datetime_format() = cfg.date_format;
+        Tracker tracker{cfg.data_path(), cfg.unlog_grace_secs};
         std::string cmd = argv[1];
 
         if (cmd == "add") {
@@ -424,6 +441,7 @@ int main(int argc, char* argv[]) {
                 std::println("✓ Target removed for \"{}\"", name);
         }
         else if (cmd == "check") {
+            if (!cfg.notify_enabled) return 0;
             auto overdue = tracker.overdue_activities();
             if (overdue.empty()) return 0;
             for (const auto& a : overdue) {
@@ -434,7 +452,7 @@ int main(int argc, char* argv[]) {
             }
         }
         else if (cmd == "web") {
-            int port = 8080;
+            int port = cfg.web_port;
             for (int i = 2; i < argc; ++i) {
                 std::string arg = argv[i];
                 if (arg == "--port" && i + 1 < argc) {
@@ -447,7 +465,7 @@ int main(int argc, char* argv[]) {
                     std::println(stderr, "Usage: overdue web [--port <n>]"); return 1;
                 }
             }
-            run_web(Storage::default_path(), port);
+            run_web(cfg.data_path(), port);
         }
         else if (cmd == "stats" && argc >= 3) {
             auto name = join_args(std::span(argv + 2, argc - 2));
@@ -520,24 +538,62 @@ int main(int argc, char* argv[]) {
             auto cfg_path = Config::default_path();
             if (argc >= 4 && std::string(argv[2]) == "set") {
                 std::string key = argv[3];
-                if (key == "unlog-grace") {
-                    if (argc < 5) { std::println(stderr, "Usage: overdue config set unlog-grace <dur>"); return 1; }
+                if (argc < 5) {
+                    std::println(stderr, "Usage: overdue config set {} <value>", key);
+                    return 1;
+                }
+                if (key == "data-dir") {
+                    cfg.data_dir = expand_home(argv[4]);
+                    Config::save(cfg_path, cfg);
+                    std::println("✓ data-dir set to {}", cfg.data_dir.string());
+                    std::println("  (existing data is not moved — copy data.json there if you want to keep it)");
+                } else if (key == "unlog-grace") {
                     auto dur = parse_duration(argv[4]);
                     if (!dur) { std::println(stderr, "Invalid duration \"{}\". Examples: 24h, 1d, 30m", argv[4]); return 1; }
                     cfg.unlog_grace_secs = *dur;
                     Config::save(cfg_path, cfg);
                     std::println("✓ unlog-grace set to {}", format_duration(*dur));
+                } else if (key == "web-port") {
+                    auto p = parse_amount(argv[4]);
+                    if (!p || *p < 1 || *p > 65535 || *p != std::floor(*p)) {
+                        std::println(stderr, "Invalid port \"{}\". Expected an integer 1-65535.", argv[4]); return 1;
+                    }
+                    cfg.web_port = static_cast<int>(*p);
+                    Config::save(cfg_path, cfg);
+                    std::println("✓ web-port set to {}", cfg.web_port);
+                } else if (key == "date-format") {
+                    // The format may contain spaces (e.g. "%Y-%m-%d %H:%M"), so take
+                    // everything after the key as one value.
+                    std::string fmt = join_args(std::span(argv + 4, argc - 4));
+                    if (!is_valid_datetime_format(fmt)) {
+                        std::println(stderr, "Invalid date format \"{}\". Example: %Y-%m-%d %H:%M:%S", fmt); return 1;
+                    }
+                    cfg.date_format = fmt;
+                    Config::save(cfg_path, cfg);
+                    datetime_format() = fmt;
+                    std::println("✓ date-format set to \"{}\"  (e.g. {})", fmt, format_datetime(now()));
+                } else if (key == "notify") {
+                    auto b = parse_bool(argv[4]);
+                    if (!b) { std::println(stderr, "Invalid value \"{}\". Use on/off (or true/false).", argv[4]); return 1; }
+                    cfg.notify_enabled = *b;
+                    Config::save(cfg_path, cfg);
+                    std::println("✓ notify {}", *b ? "enabled" : "disabled");
                 } else {
-                    std::println(stderr, "Unknown setting \"{}\". Known settings: unlog-grace", key);
+                    std::println(stderr, "Unknown setting \"{}\". Known: data-dir, unlog-grace, web-port, date-format, notify", key);
                     return 1;
                 }
             } else if (argc == 2) {
-                std::println("Configuration");
-                std::println("{}", std::string(40, '-'));
-                std::println("  unlog-grace: {}   (window to restore an unlogged entry)",
+                std::println("Configuration ({})", cfg_path.string());
+                std::println("{}", std::string(50, '-'));
+                std::println("  data-dir:     {}", cfg.data_dir.string());
+                std::println("  unlog-grace:  {}   (window to restore an unlogged entry)",
                     format_duration(cfg.unlog_grace_secs));
+                std::println("  web-port:     {}", cfg.web_port);
+                std::println("  date-format:  {}   (e.g. {})", cfg.date_format, format_datetime(now()));
+                std::println("  notify:       {}", cfg.notify_enabled ? "on" : "off");
             } else {
-                std::println(stderr, "Usage: overdue config | overdue config set unlog-grace <dur>");
+                std::println(stderr, "Usage: overdue config | overdue config set <key> <value>");
+                std::println(stderr, "Keys: data-dir, unlog-grace, web-port, date-format, notify");
                 return 1;
             }
         }

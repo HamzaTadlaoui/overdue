@@ -1,6 +1,7 @@
 #pragma once
 #include <chrono>
 #include <cmath>
+#include <format>
 #include <optional>
 #include <string>
 #include <vector>
@@ -49,11 +50,18 @@ inline const std::chrono::system_clock::time_point& last_done(const Activity& a)
     return a.logs.back().when;
 }
 
-inline std::string format_datetime(const std::chrono::system_clock::time_point& tp) {
-    auto local = std::chrono::current_zone()->to_local(tp);
-    auto dp    = std::chrono::floor<std::chrono::days>(local);
+// chrono/strftime-style format applied to timestamps. Set once at startup from
+// Config::date_format; a single definition is shared across translation units.
+inline std::string& datetime_format() {
+    static std::string fmt = "%Y-%m-%d %H:%M:%S";
+    return fmt;
+}
+
+// Fixed ISO rendering used when no/invalid custom format is in play.
+inline std::string format_datetime_iso(const std::chrono::local_seconds& local) {
+    auto dp = std::chrono::floor<std::chrono::days>(local);
     std::chrono::year_month_day ymd{dp};
-    std::chrono::hh_mm_ss hms{std::chrono::duration_cast<std::chrono::seconds>(local - dp)};
+    std::chrono::hh_mm_ss hms{local - dp};
     return std::format("{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}",
         static_cast<int>(ymd.year()),
         static_cast<unsigned>(ymd.month()),
@@ -61,6 +69,27 @@ inline std::string format_datetime(const std::chrono::system_clock::time_point& 
         hms.hours().count(),
         hms.minutes().count(),
         hms.seconds().count());
+}
+
+inline std::string format_datetime(const std::chrono::system_clock::time_point& tp) {
+    auto local = std::chrono::floor<std::chrono::seconds>(
+        std::chrono::current_zone()->to_local(tp));
+    try {
+        return std::vformat("{:" + datetime_format() + "}", std::make_format_args(local));
+    } catch (...) {
+        // A malformed user format must never crash a read path — fall back to ISO.
+        return format_datetime_iso(local);
+    }
+}
+
+// True if `fmt` is a usable chrono format spec (used to validate `config set`).
+inline bool is_valid_datetime_format(const std::string& fmt) {
+    std::chrono::local_seconds local = std::chrono::floor<std::chrono::seconds>(
+        std::chrono::current_zone()->to_local(std::chrono::system_clock::now()));
+    try {
+        (void)std::vformat("{:" + fmt + "}", std::make_format_args(local));
+        return true;
+    } catch (...) { return false; }
 }
 
 inline std::string format_elapsed(const std::chrono::system_clock::time_point& last) {

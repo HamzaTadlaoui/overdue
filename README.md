@@ -73,8 +73,8 @@ Requires `notify-send` (included in most GNOME/KDE setups).
 | `overdue deltarget <name>` | Remove the target |
 | `overdue check` | Send desktop notifications for all overdue habits |
 | `overdue web [--port <n>]` | Open an interactive dashboard in your browser (default `:8080`) |
-| `overdue config` | Show settings |
-| `overdue config set <key> <value>` | Change a setting (e.g. `unlog-grace 24h`) |
+| `overdue config` | Show settings and the active config file path |
+| `overdue config set <key> <value>` | Change a setting (see [Settings](#settings)) |
 
 Activity names can be multi-word without quotes: `overdue add brush teeth`
 
@@ -178,11 +178,54 @@ Combine units freely: `3d`, `12h`, `30m`, `1d6h`, `1d6h30m`
 
 ---
 
+## Settings
+
+Settings live in a JSON config file, separate from your data so they can point at it.
+Show the current settings and where they're stored with:
+
+```bash
+overdue config
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `data-dir` | `~/.local/share/overdue` | Directory holding `data.json` |
+| `unlog-grace` | `24h` | Window to restore an unlogged entry (`30m`, `7d`, …) |
+| `web-port` | `8080` | Default port for `overdue web` |
+| `date-format` | `%Y-%m-%d %H:%M:%S` | How timestamps are displayed ([strftime-style](https://en.cppreference.com/w/cpp/chrono/system_clock/formatter)) |
+| `notify` | `on` | Whether `overdue check` sends desktop notifications |
+
+```bash
+overdue config set unlog-grace 7d
+overdue config set web-port 9000
+overdue config set date-format %d/%m/%Y %H:%M   # names may contain spaces, no quotes needed
+overdue config set notify off
+```
+
+Invalid values (a bad port, an unparseable date format, …) are rejected without changing anything.
+
+### Config location & separate profiles
+
+By default the config file is `~/.config/overdue/config.json` (honoring `$XDG_CONFIG_HOME`).
+Set the `OVERDUE_CONFIG` environment variable to use a different one — this is how you keep a
+throwaway **dev/testing** profile completely separate from your **real** habit data:
+
+```bash
+# real usage — the default config and data
+overdue list
+
+# development — its own config pointing at throwaway data, your real history untouched
+export OVERDUE_CONFIG=~/.config/overdue/dev.json
+overdue config set data-dir /tmp/overdue-dev
+overdue list        # this shell now only sees the dev data
+```
+
+Because `data-dir` is itself a setting, each config file can point at its own data directory,
+so switching profiles switches both settings and data together.
+
 ## Data
 
-All logs are stored in `~/.local/share/overdue/data.json`, written atomically (temp file + rename) so a crash can't corrupt it. Every log entry is preserved — full history, never overwritten — which is what powers streaks and stats. Each log is `{ "t": <unix>, "q": <amount?> }`; older files that stored bare timestamps are upgraded automatically on the next write. Unlogged-but-not-yet-purged entries are kept in a per-activity `"unlogged"` array (each carrying its original log plus the unlog time) until their grace period elapses.
-
-Settings live alongside it in `~/.local/share/overdue/config.json` (currently just `unlog_grace_secs`). The file is optional — defaults apply if it's missing.
+All logs are stored in `data.json` inside `data-dir` (default `~/.local/share/overdue/`, honoring `$XDG_DATA_HOME`), written atomically (temp file + rename) so a crash can't corrupt it. Every log entry is preserved — full history, never overwritten — which is what powers streaks and stats. Each log is `{ "t": <unix>, "q": <amount?> }`; older files that stored bare timestamps are upgraded automatically on the next write. Unlogged-but-not-yet-purged entries are kept in a per-activity `"unlogged"` array (each carrying its original log plus the unlog time) until their grace period elapses.
 
 ---
 
