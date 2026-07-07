@@ -36,12 +36,22 @@ inline std::optional<long long> avg_interval(const Activity& a) {
 
 inline std::chrono::local_days to_local_days(const std::chrono::system_clock::time_point& tp) {
     return std::chrono::floor<std::chrono::days>(
-        std::chrono::current_zone()->to_local(tp));
+        active_zone()->to_local(tp));
 }
 
+// First day of the week for weekly streaks and the calendar heatmap. Set once
+// at startup from Config::week_start (defaults to Monday, the ISO week start).
+inline std::chrono::weekday& week_start_day() {
+    static std::chrono::weekday d = std::chrono::Monday;
+    return d;
+}
+
+// Snaps `d` back to the most recent configured week-start day (inclusive).
 inline std::chrono::local_days week_start(std::chrono::local_days d) {
-    unsigned iso = std::chrono::weekday{d}.iso_encoding(); // Mon=1, Sun=7
-    return d - std::chrono::days{iso - 1};
+    unsigned cur   = std::chrono::weekday{d}.c_encoding();   // Sun=0 .. Sat=6
+    unsigned first = week_start_day().c_encoding();
+    unsigned back  = (cur + 7 - first) % 7;
+    return d - std::chrono::days{back};
 }
 
 using YM = std::pair<int, unsigned>;

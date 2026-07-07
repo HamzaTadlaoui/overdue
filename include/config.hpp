@@ -16,11 +16,44 @@ struct Config {
     // Default port for `overdue web` (still overridable per-run with --port).
     int web_port = 8080;
 
-    // chrono/strftime-style format used to render timestamps (see format_datetime).
-    std::string date_format = "%Y-%m-%d %H:%M:%S";
+    // How timestamps are rendered. Two modes coexist:
+    //  * "custom": date_format holds a raw chrono/strftime string (set directly
+    //    or via a named preset like "us"); it is used verbatim.
+    //  * "structured": date_format is empty and the format is composed from the
+    //    knobs below (order/separator/clock/seconds) by effective_date_format().
+    // Setting date_format switches to custom; setting any knob clears it back to
+    // structured. Empty default => structured, which yields "%Y-%m-%d %H:%M:%S".
+    std::string date_format;          // raw override; empty => use the knobs
+    std::string date_order = "ymd";   // ymd | dmy | mdy
+    std::string date_sep   = "-";     // separator between date parts: - . / or space
+    std::string clock      = "24h";   // 24h | 12h
+    bool show_seconds      = true;    // include :SS in the time
+
+    // The chrono format actually applied: date_format if set, else built from
+    // date_order/date_sep/clock/show_seconds.
+    std::string effective_date_format() const;
+
+    // IANA time zone (e.g. "Europe/Paris") used to render and day/week-bucket
+    // every timestamp. Empty follows the system zone. See active_zone().
+    std::string timezone;
+
+    // First day of the week for weekly streaks and the calendar heatmap:
+    // "monday" (ISO default) or "sunday".
+    std::string week_start = "monday";
 
     // Whether `overdue check` sends desktop notifications.
     bool notify_enabled = true;
+
+    // Minimum time between repeat notifications for the same overdue activity,
+    // so a frequently-scheduled `overdue check` (e.g. cron) doesn't spam. 0
+    // disables throttling. Last-sent times live in <data_dir>/notify_state.json.
+    long long notify_cooldown_secs = 3600; // default: 1h
+
+    // Optional nightly quiet window, as local hours [start, end), during which
+    // `overdue check` stays silent. Equal values disable it; the window may wrap
+    // past midnight (e.g. 22 → 7 means 22:00 through 06:59).
+    int notify_quiet_start = 0;
+    int notify_quiet_end = 0;
 
     static Config load(const std::filesystem::path& path);
     static void save(const std::filesystem::path& path, const Config& cfg);

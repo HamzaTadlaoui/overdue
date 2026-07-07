@@ -57,6 +57,32 @@ inline std::string& datetime_format() {
     return fmt;
 }
 
+// Configured IANA time-zone name (e.g. "Europe/Paris"); empty = follow the
+// system zone. Set once at startup from Config::timezone, shared across
+// translation units (same pattern as datetime_format()).
+inline std::string& timezone_name() {
+    static std::string tz;
+    return tz;
+}
+
+// The zone all timestamps are rendered and day/week-bucketed in: the configured
+// zone when set and valid, otherwise the system zone. An unknown name silently
+// falls back to the system zone so a bad config never breaks a read path.
+inline const std::chrono::time_zone* active_zone() {
+    const std::string& tz = timezone_name();
+    if (!tz.empty()) {
+        try { return std::chrono::locate_zone(tz); }
+        catch (...) { /* unknown zone — fall through */ }
+    }
+    return std::chrono::current_zone();
+}
+
+// True if `tz` names a zone the system knows about (used to validate config).
+inline bool is_valid_timezone(const std::string& tz) {
+    try { (void)std::chrono::locate_zone(tz); return true; }
+    catch (...) { return false; }
+}
+
 // Fixed ISO rendering used when no/invalid custom format is in play.
 inline std::string format_datetime_iso(const std::chrono::local_seconds& local) {
     auto dp = std::chrono::floor<std::chrono::days>(local);
@@ -73,7 +99,7 @@ inline std::string format_datetime_iso(const std::chrono::local_seconds& local) 
 
 inline std::string format_datetime(const std::chrono::system_clock::time_point& tp) {
     auto local = std::chrono::floor<std::chrono::seconds>(
-        std::chrono::current_zone()->to_local(tp));
+        active_zone()->to_local(tp));
     try {
         return std::vformat("{:" + datetime_format() + "}", std::make_format_args(local));
     } catch (...) {
@@ -85,7 +111,7 @@ inline std::string format_datetime(const std::chrono::system_clock::time_point& 
 // True if `fmt` is a usable chrono format spec (used to validate `config set`).
 inline bool is_valid_datetime_format(const std::string& fmt) {
     std::chrono::local_seconds local = std::chrono::floor<std::chrono::seconds>(
-        std::chrono::current_zone()->to_local(std::chrono::system_clock::now()));
+        active_zone()->to_local(std::chrono::system_clock::now()));
     try {
         (void)std::vformat("{:" + fmt + "}", std::make_format_args(local));
         return true;
@@ -126,7 +152,7 @@ inline std::optional<std::chrono::system_clock::time_point> parse_at(const std::
             long long sec = (s.size() >= 19) ? std::stoi(s.substr(17, 2)) : 0;
             local_sec += std::chrono::hours{h} + std::chrono::minutes{m} + std::chrono::seconds{sec};
         }
-        return std::chrono::current_zone()->to_sys(local_sec);
+        return active_zone()->to_sys(local_sec);
     } catch (...) { return std::nullopt; }
 }
 

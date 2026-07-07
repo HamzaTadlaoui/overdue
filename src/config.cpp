@@ -31,8 +31,26 @@ Config Config::load(const std::filesystem::path& path) {
         cfg.web_port = j["web_port"].get<int>();
     if (j.contains("date_format"))
         cfg.date_format = j["date_format"].get<std::string>();
+    if (j.contains("date_order"))
+        cfg.date_order = j["date_order"].get<std::string>();
+    if (j.contains("date_sep"))
+        cfg.date_sep = j["date_sep"].get<std::string>();
+    if (j.contains("clock"))
+        cfg.clock = j["clock"].get<std::string>();
+    if (j.contains("show_seconds"))
+        cfg.show_seconds = j["show_seconds"].get<bool>();
+    if (j.contains("timezone"))
+        cfg.timezone = j["timezone"].get<std::string>();
+    if (j.contains("week_start"))
+        cfg.week_start = j["week_start"].get<std::string>();
     if (j.contains("notify_enabled"))
         cfg.notify_enabled = j["notify_enabled"].get<bool>();
+    if (j.contains("notify_cooldown_secs"))
+        cfg.notify_cooldown_secs = j["notify_cooldown_secs"].get<long long>();
+    if (j.contains("notify_quiet_start"))
+        cfg.notify_quiet_start = j["notify_quiet_start"].get<int>();
+    if (j.contains("notify_quiet_end"))
+        cfg.notify_quiet_end = j["notify_quiet_end"].get<int>();
     return cfg;
 }
 
@@ -44,7 +62,16 @@ void Config::save(const std::filesystem::path& path, const Config& cfg) {
         {"unlog_grace_secs", cfg.unlog_grace_secs},
         {"web_port", cfg.web_port},
         {"date_format", cfg.date_format},
-        {"notify_enabled", cfg.notify_enabled}
+        {"date_order", cfg.date_order},
+        {"date_sep", cfg.date_sep},
+        {"clock", cfg.clock},
+        {"show_seconds", cfg.show_seconds},
+        {"timezone", cfg.timezone},
+        {"week_start", cfg.week_start},
+        {"notify_enabled", cfg.notify_enabled},
+        {"notify_cooldown_secs", cfg.notify_cooldown_secs},
+        {"notify_quiet_start", cfg.notify_quiet_start},
+        {"notify_quiet_end", cfg.notify_quiet_end}
     };
 
     auto tmp = path;
@@ -65,6 +92,23 @@ std::filesystem::path Config::default_path() {
     if (const char* xdg = std::getenv("XDG_CONFIG_HOME"); xdg && *xdg)
         return std::filesystem::path(xdg) / "overdue" / "config.json";
     return std::filesystem::path(require_home()) / ".config" / "overdue" / "config.json";
+}
+
+std::string Config::effective_date_format() const {
+    // A raw/preset string wins; the knobs are only consulted in structured mode.
+    if (!date_format.empty()) return date_format;
+
+    const std::string& s = date_sep;
+    std::string date;
+    if (date_order == "dmy")      date = "%d" + s + "%m" + s + "%Y";
+    else if (date_order == "mdy") date = "%m" + s + "%d" + s + "%Y";
+    else                          date = "%Y" + s + "%m" + s + "%d"; // ymd default
+
+    std::string time = (clock == "12h")
+        ? (show_seconds ? "%I:%M:%S %p" : "%I:%M %p")
+        : (show_seconds ? "%H:%M:%S"    : "%H:%M");
+
+    return date + " " + time;
 }
 
 std::filesystem::path Config::default_data_dir() {

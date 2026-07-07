@@ -44,6 +44,9 @@ systemctl --user enable --now overdue-check.timer
 
 Requires `notify-send` (included in most GNOME/KDE setups).
 
+The timer can run as often as you like — `notify-cooldown` keeps it from re-alerting the same
+habit too frequently, and `quiet-hours` silences notifications overnight (see [Settings](#settings)).
+
 ---
 
 ## Commands
@@ -192,17 +195,69 @@ overdue config
 | `data-dir` | `~/.local/share/overdue` | Directory holding `data.json` |
 | `unlog-grace` | `24h` | Window to restore an unlogged entry (`30m`, `7d`, …) |
 | `web-port` | `8080` | Default port for `overdue web` |
-| `date-format` | `%Y-%m-%d %H:%M:%S` | How timestamps are displayed ([strftime-style](https://en.cppreference.com/w/cpp/chrono/system_clock/formatter)) |
+| `date-format` | *(structured)* | Timestamp format — a preset, a raw [strftime-style](https://en.cppreference.com/w/cpp/chrono/system_clock/formatter) string, or built from the knobs below |
+| `date-order` | `ymd` | Component order: `ymd`, `dmy`, or `mdy` |
+| `date-sep` | `-` | Separator between date parts: `-` `.` `/` (or `dash`/`dot`/`slash`/`space`) |
+| `clock` | `24h` | `24h` (`22:15`) or `12h` (`10:15 PM`) |
+| `show-seconds` | `on` | Include `:SS` in the time |
+| `timezone` | *(system)* | IANA zone for rendering/bucketing all times (e.g. `Europe/Paris`); `system` follows the OS |
+| `week-start` | `monday` | First day of the week for weekly streaks and the heatmap (`monday`/`sunday`) |
 | `notify` | `on` | Whether `overdue check` sends desktop notifications |
+| `notify-cooldown` | `1h` | Minimum gap between repeat alerts for the same overdue habit (`30m`, `off`) |
+| `quiet-hours` | `off` | Nightly window where `overdue check` stays silent, e.g. `22-7` (wraps midnight) |
 
 ```bash
 overdue config set unlog-grace 7d
 overdue config set web-port 9000
-overdue config set date-format %d/%m/%Y %H:%M   # names may contain spaces, no quotes needed
+overdue config set timezone Europe/Paris
+overdue config set week-start sunday
+overdue config set notify-cooldown 30m       # don't re-alert the same habit within 30m
+overdue config set quiet-hours 22-7          # silence 22:00–06:59
 overdue config set notify off
 ```
 
-Invalid values (a bad port, an unparseable date format, …) are rejected without changing anything.
+Invalid values (a bad port, an unknown timezone, an unparseable date format, …) are rejected without changing anything.
+
+### Date & time format
+
+There are three ways to control how timestamps look, from easiest to most flexible:
+
+**Presets** — one word that expands to a full format:
+
+| Preset | Example |
+|---|---|
+| `iso` | `2026-07-07 22:15:03` |
+| `us` | `07/07/2026 10:15 PM` |
+| `eu` | `07/07/2026 22:15` |
+| `uk` | `07-07-2026 22:15:03` |
+| `compact` | `20260707-2215` |
+| `long` | `Tuesday, 07 July 2026 22:15` |
+
+```bash
+overdue config set date-format eu
+```
+
+**Structured knobs** — mix `date-order`, `date-sep`, `clock`, and `show-seconds` and the app
+builds the format for you (no `%` codes to remember):
+
+```bash
+overdue config set date-order dmy
+overdue config set date-sep slash
+overdue config set clock 12h
+overdue config set show-seconds off      # → 07/07/2026 10:15 PM
+```
+
+**Raw string** — a full [chrono/strftime](https://en.cppreference.com/w/cpp/chrono/system_clock/formatter)
+format for anything the above can't express (names may contain spaces, no quotes needed):
+
+```bash
+overdue config set date-format %A %d %b, %I:%M %p
+```
+
+Setting `date-format` (preset or raw) switches to a *custom* format used verbatim; setting any
+structured knob switches back to *structured* mode. `overdue config` shows which mode is active
+along with a live example. This format also drives the clock style (12h vs 24h) and applies
+everywhere times are shown, including the web dashboard.
 
 ### Config location & separate profiles
 

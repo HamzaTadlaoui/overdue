@@ -2,9 +2,12 @@
 #include "stats.hpp"
 #include "config.hpp"
 #include "web.hpp"
+#include <nlohmann/json.hpp>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <iostream>
+#include <map>
 #include <print>
 #include <span>
 #include <sys/wait.h>
@@ -34,6 +37,44 @@ static std::optional<bool> parse_bool(const std::string& s) {
     return std::nullopt;
 }
 
+// Friendly names for common full formats. `overdue config set date-format <name>`
+// expands one of these; anything else is treated as a raw chrono format string.
+static const std::vector<std::pair<std::string, std::string>>& date_format_presets() {
+    static const std::vector<std::pair<std::string, std::string>> presets = {
+        {"iso",     "%Y-%m-%d %H:%M:%S"},        // 2026-07-07 22:15:03
+        {"us",      "%m/%d/%Y %I:%M %p"},        // 07/07/2026 10:15 PM
+        {"eu",      "%d/%m/%Y %H:%M"},           // 07/07/2026 22:15
+        {"uk",      "%d-%m-%Y %H:%M:%S"},        // 07-07-2026 22:15:03
+        {"compact", "%Y%m%d-%H%M"},              // 20260707-2215
+        {"long",    "%A, %d %B %Y %H:%M"},       // Tuesday, 07 July 2026 22:15
+    };
+    return presets;
+}
+
+static std::optional<std::string> lookup_date_preset(const std::string& name) {
+    for (const auto& [k, v] : date_format_presets())
+        if (k == name) return v;
+    return std::nullopt;
+}
+
+static std::string preset_names_csv() {
+    std::string out;
+    for (const auto& [k, v] : date_format_presets()) {
+        if (!out.empty()) out += ", ";
+        out += k;
+    }
+    return out;
+}
+
+// Accepts a separator either literally (- . /) or by name (dash/dot/slash/space).
+static std::optional<std::string> parse_date_sep(const std::string& s) {
+    if (s == "-" || s == "dash")  return "-";
+    if (s == "." || s == "dot")   return ".";
+    if (s == "/" || s == "slash") return "/";
+    if (s == " " || s == "space") return " ";
+    return std::nullopt;
+}
+
 static void notify(const std::string& title, const std::string& body) {
     pid_t pid = fork();
     if (pid == 0) {
@@ -43,6 +84,41 @@ static void notify(const std::string& title, const std::string& body) {
     } else if (pid > 0) {
         waitpid(pid, nullptr, 0);
     }
+}
+
+// True when the current local time falls inside the nightly quiet window
+// [start, end) (hours). start == end disables it; end < start wraps midnight.
+static bool in_quiet_hours(int start, int end) {
+    if (start == end) return false;
+    auto local = std::chrono::floor<std::chrono::seconds>(active_zone()->to_local(now()));
+    auto dp = std::chrono::floor<std::chrono::days>(local);
+    int hour = std::chrono::hh_mm_ss{local - dp}.hours().count();
+    return start < end ? (hour >= start && hour < end)
+                       : (hour >= start || hour < end);
+}
+
+// Per-activity last-notified epoch seconds, used to honour notify_cooldown_secs
+// across separate `overdue check` runs. Stored next to data.json; a
+// missing/corrupt file is treated as empty so it can never block a check.
+static std::map<std::string, long long> load_notify_state(const std::filesystem::path& p) {
+    std::map<std::string, long long> m;
+    std::ifstream f(p);
+    if (!f) return m;
+    try {
+        for (auto& [k, v] : nlohmann::json::parse(f).items())
+            m[k] = v.get<long long>();
+    } catch (...) { /* corrupt state is non-fatal */ }
+    return m;
+}
+
+static void save_notify_state(const std::filesystem::path& p,
+                              const std::map<std::string, long long>& m) {
+    nlohmann::json j = nlohmann::json::object();
+    for (const auto& [k, v] : m) j[k] = v;
+    std::filesystem::create_directories(p.parent_path());
+    auto tmp = p; tmp += ".tmp";
+    { std::ofstream f(tmp); f << j.dump(2) << '\n'; }
+    std::filesystem::rename(tmp, p);
 }
 
 static void print_usage() {
@@ -73,7 +149,9 @@ static void print_usage() {
     std::println("  overdue delstreak <name>        Remove streak tracking");
     std::println("  overdue stats [name]            Global stats, or detail for one entry");
     std::println("  overdue config                  Show settings and config file path");
-    std::println("  overdue config set <k> <v>      Set data-dir|unlog-grace|web-port|date-format|notify");
+    std::println("  overdue config set <k> <v>      data-dir|unlog-grace|web-port|date-format|date-order|");
+    std::println("                                  date-sep|clock|show-seconds|timezone|week-start|");
+    std::println("                                  notify|notify-cooldown|quiet-hours");
 }
 
 int main(int argc, char* argv[]) {
@@ -81,7 +159,10 @@ int main(int argc, char* argv[]) {
 
     try {
         Config cfg = Config::load(Config::default_path());
-        datetime_format() = cfg.date_format;
+        datetime_format() = cfg.effective_date_format();
+        timezone_name()   = cfg.timezone;
+        week_start_day()  = (cfg.week_start == "sunday") ? std::chrono::Sunday
+                                                         : std::chrono::Monday;
         Tracker tracker{cfg.data_path(), cfg.unlog_grace_secs};
         std::string cmd = argv[1];
 
@@ -442,14 +523,30 @@ int main(int argc, char* argv[]) {
         }
         else if (cmd == "check") {
             if (!cfg.notify_enabled) return 0;
+            if (in_quiet_hours(cfg.notify_quiet_start, cfg.notify_quiet_end)) return 0;
             auto overdue = tracker.overdue_activities();
             if (overdue.empty()) return 0;
+
+            auto state_path = cfg.data_dir / "notify_state.json";
+            auto state = load_notify_state(state_path);
+            long long now_s = std::chrono::duration_cast<std::chrono::seconds>(
+                now().time_since_epoch()).count();
+            bool changed = false;
             for (const auto& a : overdue) {
+                if (cfg.notify_cooldown_secs > 0) {
+                    auto it = state.find(a.name);
+                    if (it != state.end() && now_s - it->second < cfg.notify_cooldown_secs)
+                        continue; // still cooling down for this activity
+                }
                 auto elapsed = format_elapsed(last_done(a));
                 auto threshold = format_duration(*a.alert_after);
                 notify(std::format("overdue: {}", a.name),
                        std::format("{} since last done (alarm: {})", elapsed, threshold));
+                state[a.name] = now_s;
+                changed = true;
             }
+            if (changed && cfg.notify_cooldown_secs > 0)
+                save_notify_state(state_path, state);
         }
         else if (cmd == "web") {
             int port = cfg.web_port;
@@ -564,22 +661,115 @@ int main(int argc, char* argv[]) {
                 } else if (key == "date-format") {
                     // The format may contain spaces (e.g. "%Y-%m-%d %H:%M"), so take
                     // everything after the key as one value.
-                    std::string fmt = join_args(std::span(argv + 4, argc - 4));
+                    std::string arg = join_args(std::span(argv + 4, argc - 4));
+                    // A bare preset name expands to its format; otherwise the arg
+                    // is a raw chrono format string.
+                    std::string fmt = lookup_date_preset(arg).value_or(arg);
                     if (!is_valid_datetime_format(fmt)) {
-                        std::println(stderr, "Invalid date format \"{}\". Example: %Y-%m-%d %H:%M:%S", fmt); return 1;
+                        std::println(stderr, "Invalid date format \"{}\". Try a preset ({}) or a chrono string like %Y-%m-%d %H:%M:%S", arg, preset_names_csv()); return 1;
                     }
-                    cfg.date_format = fmt;
+                    cfg.date_format = fmt; // switch to custom mode
                     Config::save(cfg_path, cfg);
                     datetime_format() = fmt;
                     std::println("✓ date-format set to \"{}\"  (e.g. {})", fmt, format_datetime(now()));
+                } else if (key == "date-order") {
+                    std::string v = argv[4];
+                    if (v != "ymd" && v != "dmy" && v != "mdy") {
+                        std::println(stderr, "Invalid date-order \"{}\". Use ymd, dmy, or mdy.", v); return 1;
+                    }
+                    cfg.date_order = v;
+                    cfg.date_format.clear(); // switch to structured mode
+                    Config::save(cfg_path, cfg);
+                    datetime_format() = cfg.effective_date_format();
+                    std::println("✓ date-order set to {}  (e.g. {})", v, format_datetime(now()));
+                } else if (key == "date-sep") {
+                    auto sep = parse_date_sep(argv[4]);
+                    if (!sep) {
+                        std::println(stderr, "Invalid date-sep \"{}\". Use - . / or the words dash/dot/slash/space.", argv[4]); return 1;
+                    }
+                    cfg.date_sep = *sep;
+                    cfg.date_format.clear();
+                    Config::save(cfg_path, cfg);
+                    datetime_format() = cfg.effective_date_format();
+                    std::println("✓ date-sep set to '{}'  (e.g. {})", *sep, format_datetime(now()));
+                } else if (key == "clock") {
+                    std::string v = argv[4];
+                    if (v != "12h" && v != "24h") {
+                        std::println(stderr, "Invalid clock \"{}\". Use 12h or 24h.", v); return 1;
+                    }
+                    cfg.clock = v;
+                    cfg.date_format.clear();
+                    Config::save(cfg_path, cfg);
+                    datetime_format() = cfg.effective_date_format();
+                    std::println("✓ clock set to {}  (e.g. {})", v, format_datetime(now()));
+                } else if (key == "show-seconds") {
+                    auto b = parse_bool(argv[4]);
+                    if (!b) { std::println(stderr, "Invalid value \"{}\". Use on/off.", argv[4]); return 1; }
+                    cfg.show_seconds = *b;
+                    cfg.date_format.clear();
+                    Config::save(cfg_path, cfg);
+                    datetime_format() = cfg.effective_date_format();
+                    std::println("✓ show-seconds {}  (e.g. {})", *b ? "on" : "off", format_datetime(now()));
+                } else if (key == "timezone") {
+                    std::string tz = argv[4];
+                    // "" / "system" / "auto" clears the override and follows the OS.
+                    if (tz == "system" || tz == "auto" || tz == "\"\"") tz.clear();
+                    if (!tz.empty() && !is_valid_timezone(tz)) {
+                        std::println(stderr, "Unknown timezone \"{}\". Use an IANA name like Europe/Paris, or \"system\".", tz); return 1;
+                    }
+                    cfg.timezone = tz;
+                    Config::save(cfg_path, cfg);
+                    timezone_name() = tz;
+                    std::println("✓ timezone set to {}  (now: {})",
+                        tz.empty() ? "system" : tz, format_datetime(now()));
+                } else if (key == "week-start") {
+                    std::string ws = argv[4];
+                    if (ws != "monday" && ws != "sunday") {
+                        std::println(stderr, "Invalid week-start \"{}\". Use monday or sunday.", ws); return 1;
+                    }
+                    cfg.week_start = ws;
+                    Config::save(cfg_path, cfg);
+                    std::println("✓ week-start set to {}", ws);
                 } else if (key == "notify") {
                     auto b = parse_bool(argv[4]);
                     if (!b) { std::println(stderr, "Invalid value \"{}\". Use on/off (or true/false).", argv[4]); return 1; }
                     cfg.notify_enabled = *b;
                     Config::save(cfg_path, cfg);
                     std::println("✓ notify {}", *b ? "enabled" : "disabled");
+                } else if (key == "notify-cooldown") {
+                    // "0"/"off" disables throttling; otherwise a duration like 30m, 2h.
+                    std::string v = argv[4];
+                    long long secs;
+                    if (v == "0" || v == "off" || v == "none") secs = 0;
+                    else {
+                        auto dur = parse_duration(v);
+                        if (!dur) { std::println(stderr, "Invalid duration \"{}\". Examples: 30m, 1h, 0 (off).", v); return 1; }
+                        secs = *dur;
+                    }
+                    cfg.notify_cooldown_secs = secs;
+                    Config::save(cfg_path, cfg);
+                    std::println("✓ notify-cooldown set to {}", secs ? format_duration(secs) : "off");
+                } else if (key == "quiet-hours") {
+                    // "22-7" (local hours) or "off"/"none" to disable.
+                    std::string v = argv[4];
+                    int qs = 0, qe = 0;
+                    if (v != "off" && v != "none") {
+                        auto dash = v.find('-');
+                        auto ps = (dash != std::string::npos) ? parse_amount(v.substr(0, dash)) : std::nullopt;
+                        auto pe = (dash != std::string::npos) ? parse_amount(v.substr(dash + 1)) : std::nullopt;
+                        if (!ps || !pe || *ps != std::floor(*ps) || *pe != std::floor(*pe) ||
+                            *ps < 0 || *ps > 23 || *pe < 0 || *pe > 23) {
+                            std::println(stderr, "Invalid quiet-hours \"{}\". Use START-END in 0-23 (e.g. 22-7), or off.", v); return 1;
+                        }
+                        qs = static_cast<int>(*ps); qe = static_cast<int>(*pe);
+                    }
+                    cfg.notify_quiet_start = qs;
+                    cfg.notify_quiet_end = qe;
+                    Config::save(cfg_path, cfg);
+                    if (qs == qe) std::println("✓ quiet-hours off");
+                    else std::println("✓ quiet-hours set to {:02d}:00–{:02d}:00", qs, qe);
                 } else {
-                    std::println(stderr, "Unknown setting \"{}\". Known: data-dir, unlog-grace, web-port, date-format, notify", key);
+                    std::println(stderr, "Unknown setting \"{}\". Known: data-dir, unlog-grace, web-port, date-format, date-order, date-sep, clock, show-seconds, timezone, week-start, notify, notify-cooldown, quiet-hours", key);
                     return 1;
                 }
             } else if (argc == 2) {
@@ -589,11 +779,27 @@ int main(int argc, char* argv[]) {
                 std::println("  unlog-grace:  {}   (window to restore an unlogged entry)",
                     format_duration(cfg.unlog_grace_secs));
                 std::println("  web-port:     {}", cfg.web_port);
-                std::println("  date-format:  {}   (e.g. {})", cfg.date_format, format_datetime(now()));
+                if (cfg.date_format.empty())
+                    std::println("  date/time:    {} · sep '{}' · {} · seconds {}   (e.g. {})",
+                        cfg.date_order, cfg.date_sep, cfg.clock,
+                        cfg.show_seconds ? "on" : "off", format_datetime(now()));
+                else
+                    std::println("  date/time:    {}   (custom · e.g. {})",
+                        cfg.date_format, format_datetime(now()));
+                std::println("  timezone:     {}", cfg.timezone.empty() ? "system" : cfg.timezone);
+                std::println("  week-start:   {}", cfg.week_start);
                 std::println("  notify:       {}", cfg.notify_enabled ? "on" : "off");
+                std::println("  notify-cooldown: {}   (min gap between repeat alerts)",
+                    cfg.notify_cooldown_secs ? format_duration(cfg.notify_cooldown_secs) : "off");
+                if (cfg.notify_quiet_start == cfg.notify_quiet_end)
+                    std::println("  quiet-hours:  off");
+                else
+                    std::println("  quiet-hours:  {:02d}:00–{:02d}:00   (no notifications)",
+                        cfg.notify_quiet_start, cfg.notify_quiet_end);
             } else {
                 std::println(stderr, "Usage: overdue config | overdue config set <key> <value>");
-                std::println(stderr, "Keys: data-dir, unlog-grace, web-port, date-format, notify");
+                std::println(stderr, "Keys: data-dir, unlog-grace, web-port, date-format, date-order, date-sep, clock, show-seconds, timezone, week-start, notify, notify-cooldown, quiet-hours");
+                std::println(stderr, "date-format presets: {}", preset_names_csv());
                 return 1;
             }
         }
