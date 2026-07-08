@@ -29,6 +29,16 @@ std::vector<OrderedRow> build_rows(const Activity& a) {
     });
     return rows;
 }
+
+// Normalize, drop empties, sort, and de-duplicate a set of tags so every stored
+// tag list has the same canonical shape regardless of entry point.
+std::vector<std::string> clean_tags(std::vector<std::string> tags) {
+    for (auto& t : tags) t = normalize_tag(t);
+    std::erase_if(tags, [](const std::string& t) { return t.empty(); });
+    std::ranges::sort(tags);
+    tags.erase(std::ranges::unique(tags).begin(), tags.end());
+    return tags;
+}
 } // namespace
 
 Tracker::Tracker(std::filesystem::path data_path, long long unlog_grace_secs)
@@ -41,7 +51,8 @@ bool Tracker::add(const std::string& name,
                   std::optional<long long> alarm,
                   std::optional<StreakConfig> streak,
                   std::optional<std::string> unit,
-                  std::optional<double> target) {
+                  std::optional<double> target,
+                  std::vector<std::string> tags) {
     if (find(name)) return false;
     Activity a;
     a.name = name;
@@ -51,6 +62,7 @@ bool Tracker::add(const std::string& name,
     a.streak = streak;
     a.unit = std::move(unit);
     a.target = target;
+    a.tags = clean_tags(std::move(tags));
     activities_.push_back(std::move(a));
     save();
     return true;
@@ -58,7 +70,8 @@ bool Tracker::add(const std::string& name,
 
 bool Tracker::addtask(const std::string& name,
                       std::optional<std::string> unit,
-                      std::optional<double> target) {
+                      std::optional<double> target,
+                      std::vector<std::string> tags) {
     if (find(name)) return false;
     Activity a;
     a.name = name;
@@ -66,6 +79,7 @@ bool Tracker::addtask(const std::string& name,
     a.logs = {LogEntry{now(), std::nullopt}};
     a.unit = std::move(unit);
     a.target = target;
+    a.tags = clean_tags(std::move(tags));
     activities_.push_back(std::move(a));
     save();
     return true;
@@ -208,6 +222,30 @@ bool Tracker::deltarget(const std::string& name) {
     auto it = std::ranges::find_if(activities_, [&](const Activity& a) { return a.name == name; });
     if (it == activities_.end()) return false;
     it->target = std::nullopt;
+    save();
+    return true;
+}
+
+bool Tracker::addtag(const std::string& name, const std::string& tag) {
+    auto it = std::ranges::find_if(activities_, [&](const Activity& a) { return a.name == name; });
+    if (it == activities_.end()) return false;
+    std::string t = normalize_tag(tag);
+    if (t.empty()) return false;
+    // Idempotent: re-adding an existing tag is a no-op success (kept sorted+unique).
+    if (std::ranges::find(it->tags, t) == it->tags.end()) {
+        it->tags.push_back(t);
+        std::ranges::sort(it->tags);
+        save();
+    }
+    return true;
+}
+
+bool Tracker::deltag(const std::string& name, const std::string& tag) {
+    auto it = std::ranges::find_if(activities_, [&](const Activity& a) { return a.name == name; });
+    if (it == activities_.end()) return false;
+    std::string t = normalize_tag(tag);
+    auto removed = std::erase(it->tags, t);
+    if (removed == 0) return false;
     save();
     return true;
 }

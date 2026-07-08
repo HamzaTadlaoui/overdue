@@ -20,10 +20,12 @@ public:
              std::optional<long long> alarm = std::nullopt,
              std::optional<StreakConfig> streak = std::nullopt,
              std::optional<std::string> unit = std::nullopt,
-             std::optional<double> target = std::nullopt);
+             std::optional<double> target = std::nullopt,
+             std::vector<std::string> tags = {});
     bool addtask(const std::string& name,
                  std::optional<std::string> unit = std::nullopt,
-                 std::optional<double> target = std::nullopt);
+                 std::optional<double> target = std::nullopt,
+                 std::vector<std::string> tags = {});
     bool setstreak(const std::string& name, StreakConfig sc);
     bool delstreak(const std::string& name);
     bool log(const std::string& name,
@@ -42,6 +44,10 @@ public:
     bool delunit(const std::string& name);
     bool settarget(const std::string& name, double target);
     bool deltarget(const std::string& name);
+    // Add/remove a single tag. addtag returns false if the activity is missing;
+    // deltag returns false if the activity is missing or lacks the tag.
+    bool addtag(const std::string& name, const std::string& tag);
+    bool deltag(const std::string& name, const std::string& tag);
 
     std::vector<Activity> habits() const;
     std::vector<Activity> tasks(bool include_done = false) const;

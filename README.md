@@ -53,8 +53,8 @@ habit too frequently, and `quiet-hours` silences notifications overnight (see [S
 
 | Command | Description |
 |---|---|
-| `overdue add <name>` | Track a recurring habit (`[--unit u] [--target n]`) |
-| `overdue addtask <name>` | Add a one-time task (`[--unit u] [--target n]`) |
+| `overdue add <name>` | Track a recurring habit (`[--unit u] [--target n] [--tag t]...`) |
+| `overdue addtask <name>` | Add a one-time task (`[--unit u] [--target n] [--tag t]...`) |
 | `overdue log <name>` | Mark habit as done right now |
 | `overdue log <name> --ago <dur>` | Mark as done X time ago |
 | `overdue log <name> --at <datetime>` | Mark as done at a specific date/time |
@@ -65,6 +65,8 @@ habit too frequently, and `quiet-hours` silences notifications overnight (see [S
 | `overdue done <name>` | Mark a task as completed (archives it) |
 | `overdue list` | Show habits and active tasks |
 | `overdue list --done` | Also show completed tasks |
+| `overdue list --type habit\|task` | Show only habits or only tasks |
+| `overdue list --tag <t>` | Show only entries with tag `<t>` (repeatable, matches any) |
 | `overdue show <name>` | Show details for one entry |
 | `overdue stats [name]` | Global stats, or quantity detail for one entry |
 | `overdue delete <name>` | Remove an entry |
@@ -74,6 +76,8 @@ habit too frequently, and `quiet-hours` silences notifications overnight (see [S
 | `overdue delunit <name>` | Remove the unit label |
 | `overdue settarget <name> <n>` | Set a goal for accumulated amount |
 | `overdue deltarget <name>` | Remove the target |
+| `overdue tag <name> <tag>` | Add a category/tag to an entry |
+| `overdue untag <name> <tag>` | Remove a tag from an entry |
 | `overdue check` | Send desktop notifications for all overdue habits |
 | `overdue web [--port <n>]` | Open an interactive dashboard in your browser (default `:8080`) |
 | `overdue config` | Show settings and the active config file path |
@@ -168,6 +172,33 @@ overdue log "write report" --amount 3        # 3 / 10 pages, still pending
 
 Amounts are only meaningful within a single activity (km and pushups aren't comparable),
 so quantity stats are always per-activity; the global `stats` view ignores them.
+
+### Tags & filtering
+
+Any habit or task can carry free-form tags (categories). Add them at creation with a
+repeatable `--tag`, or later with `tag`/`untag`:
+
+```bash
+overdue add "morning run" --tag health --tag morning
+overdue addtask "file taxes" --tag finance --tag admin
+overdue tag reading learning        # add a tag to an existing entry
+overdue untag reading learning      # remove it
+```
+
+Tags are stored lowercased, trimmed, de-duplicated and sorted, so `Work`, ` work ` and
+`work` are the same tag. They show up as a column in `list` and on the `show` page.
+
+`list` accepts filters that combine freely:
+
+```bash
+overdue list --tag health           # only entries tagged 'health'
+overdue list --tag work --tag admin # entries tagged 'work' OR 'admin' (matches any)
+overdue list --type task            # only tasks
+overdue list --type habit --tag health --done
+```
+
+`--type` restricts to `habit` or `task`; `--tag` (repeatable) keeps entries carrying **any**
+of the given tags; `--done` still includes completed tasks. All three can be used together.
 
 ### Duration format
 

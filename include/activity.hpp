@@ -1,4 +1,6 @@
 #pragma once
+#include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <format>
@@ -40,6 +42,7 @@ struct Activity {
     std::optional<StreakConfig> streak;
     std::optional<std::string> unit;   // display label for amounts, e.g. "km"
     std::optional<double> target;      // optional goal for accumulated amount
+    std::vector<std::string> tags;     // free-form categories, kept sorted+unique
 };
 
 inline std::chrono::system_clock::time_point now() {
@@ -221,6 +224,33 @@ inline std::string format_amount(double v) {
         s.erase(last + 1);
     }
     return s;
+}
+
+// Trims surrounding whitespace and lowercases a tag so lookups and de-duplication
+// are case- and padding-insensitive ("Work", " work " and "work" are one tag).
+inline std::string normalize_tag(const std::string& s) {
+    auto begin = s.find_first_not_of(" \t");
+    if (begin == std::string::npos) return {};
+    auto end = s.find_last_not_of(" \t");
+    std::string out = s.substr(begin, end - begin + 1);
+    for (char& c : out) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return out;
+}
+
+// True if `a` carries `tag` (compared after normalization).
+inline bool has_tag(const Activity& a, const std::string& tag) {
+    std::string t = normalize_tag(tag);
+    return std::find(a.tags.begin(), a.tags.end(), t) != a.tags.end();
+}
+
+// Comma-space joined tag list for display, e.g. "health, morning".
+inline std::string format_tags(const std::vector<std::string>& tags) {
+    std::string out;
+    for (const auto& t : tags) {
+        if (!out.empty()) out += ", ";
+        out += t;
+    }
+    return out;
 }
 
 // Parses a non-negative quantity; rejects trailing junk and non-finite values.

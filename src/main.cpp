@@ -135,6 +135,8 @@ static void print_usage() {
     std::println("  overdue done <name>             Mark a task as completed");
     std::println("  overdue list                    Show habits and active tasks");
     std::println("  overdue list --done             Also show completed tasks");
+    std::println("  overdue list --type habit|task  Show only one kind");
+    std::println("  overdue list --tag <t>          Show only entries with tag <t> (repeatable)");
     std::println("  overdue show <name>             Show details for one entry");
     std::println("  overdue delete <name>           Remove an entry");
     std::println("  overdue setalarm <name> <dur>   Alert after this long without logging");
@@ -143,6 +145,8 @@ static void print_usage() {
     std::println("  overdue delunit <name>          Remove the unit label");
     std::println("  overdue settarget <name> <n>    Set a goal for accumulated amount");
     std::println("  overdue deltarget <name>        Remove the target");
+    std::println("  overdue tag <name> <tag>        Add a category/tag to an entry");
+    std::println("  overdue untag <name> <tag>      Remove a tag from an entry");
     std::println("  overdue check                   Send notifications for overdue habits");
     std::println("  overdue web [--port <n>]        Open a dashboard in your browser (default :8080)");
     std::println("  overdue setstreak <name> <s>    Set streak (daily/weekly/monthly/3d...)");
@@ -167,12 +171,13 @@ int main(int argc, char* argv[]) {
         std::string cmd = argv[1];
 
         if (cmd == "add") {
-            if (argc < 3) { std::println(stderr, "Usage: overdue add <name> [--alarm <dur>] [--streak daily|weekly|monthly|<dur>] [--unit <u>] [--target <n>]"); return 1; }
+            if (argc < 3) { std::println(stderr, "Usage: overdue add <name> [--alarm <dur>] [--streak daily|weekly|monthly|<dur>] [--unit <u>] [--target <n>] [--tag <t>]..."); return 1; }
 
             std::optional<long long> alarm;
             std::optional<StreakConfig> streak;
             std::optional<std::string> unit;
             std::optional<double> target;
+            std::vector<std::string> tags;
             std::vector<std::string> name_parts;
 
             for (int i = 2; i < argc; ++i) {
@@ -189,6 +194,8 @@ int main(int argc, char* argv[]) {
                 } else if (arg == "--target" && i + 1 < argc) {
                     target = parse_amount(argv[++i]);
                     if (!target) { std::println(stderr, "Invalid target. Expected a non-negative number."); return 1; }
+                } else if ((arg == "--tag" || arg == "--tags") && i + 1 < argc) {
+                    tags.push_back(argv[++i]);
                 } else {
                     name_parts.push_back(arg);
                 }
@@ -197,16 +204,17 @@ int main(int argc, char* argv[]) {
             std::string name;
             for (const auto& p : name_parts) { if (!name.empty()) name += ' '; name += p; }
 
-            if (!tracker.add(name, alarm, streak, unit, target))
+            if (!tracker.add(name, alarm, streak, unit, target, tags))
                 std::println(stderr, "\"{}\" is already being tracked.", name);
             else
                 std::println("✓ Now tracking \"{}\"", name);
         }
         else if (cmd == "addtask") {
-            if (argc < 3) { std::println(stderr, "Usage: overdue addtask <name> [--unit <u>] [--target <n>]"); return 1; }
+            if (argc < 3) { std::println(stderr, "Usage: overdue addtask <name> [--unit <u>] [--target <n>] [--tag <t>]..."); return 1; }
 
             std::optional<std::string> unit;
             std::optional<double> target;
+            std::vector<std::string> tags;
             std::vector<std::string> name_parts;
 
             for (int i = 2; i < argc; ++i) {
@@ -216,6 +224,8 @@ int main(int argc, char* argv[]) {
                 } else if (arg == "--target" && i + 1 < argc) {
                     target = parse_amount(argv[++i]);
                     if (!target) { std::println(stderr, "Invalid target. Expected a non-negative number."); return 1; }
+                } else if ((arg == "--tag" || arg == "--tags") && i + 1 < argc) {
+                    tags.push_back(argv[++i]);
                 } else {
                     name_parts.push_back(arg);
                 }
@@ -224,7 +234,7 @@ int main(int argc, char* argv[]) {
             std::string name;
             for (const auto& p : name_parts) { if (!name.empty()) name += ' '; name += p; }
 
-            if (!tracker.addtask(name, unit, target))
+            if (!tracker.addtask(name, unit, target, tags))
                 std::println(stderr, "\"{}\" already exists.", name);
             else
                 std::println("✓ Task \"{}\" added.", name);
@@ -375,20 +385,55 @@ int main(int argc, char* argv[]) {
                 std::println("✓ Streak removed for \"{}\"", name);
         }
         else if (cmd == "list") {
-            bool show_done = (argc >= 3 && std::string(argv[2]) == "--done");
+            // Filters: --done (include completed tasks), --tag <t> (repeatable,
+            // match-any), --type habit|task (restrict to one section).
+            bool show_done = false;
+            bool show_habits = true, show_tasks = true;
+            std::vector<std::string> filter_tags;
+            for (int i = 2; i < argc; ++i) {
+                std::string arg = argv[i];
+                if (arg == "--done") {
+                    show_done = true;
+                } else if ((arg == "--tag" || arg == "--tags") && i + 1 < argc) {
+                    filter_tags.push_back(argv[++i]);
+                } else if (arg == "--type" && i + 1 < argc) {
+                    std::string t = argv[++i];
+                    if (t == "habit" || t == "habits") { show_habits = true; show_tasks = false; }
+                    else if (t == "task" || t == "tasks") { show_habits = false; show_tasks = true; }
+                    else { std::println(stderr, "Invalid --type \"{}\". Use habit or task.", t); return 1; }
+                } else {
+                    std::println(stderr, "Usage: overdue list [--done] [--type habit|task] [--tag <t>]..."); return 1;
+                }
+            }
 
-            auto habits = tracker.habits();
-            auto tasks  = tracker.tasks(show_done);
+            // An activity passes when it carries any of the requested tags (or no
+            // tag filter was given).
+            auto matches = [&](const Activity& a) {
+                if (filter_tags.empty()) return true;
+                for (const auto& t : filter_tags)
+                    if (has_tag(a, t)) return true;
+                return false;
+            };
+
+            std::vector<Activity> habits, tasks;
+            if (show_habits)
+                for (auto& a : tracker.habits()) if (matches(a)) habits.push_back(std::move(a));
+            if (show_tasks)
+                for (auto& a : tracker.tasks(show_done)) if (matches(a)) tasks.push_back(std::move(a));
 
             if (habits.empty() && tasks.empty()) {
-                std::println("Nothing tracked. Use 'overdue add <name>' or 'overdue addtask <name>'.");
+                if (!filter_tags.empty())
+                    std::println("Nothing matches tag{} {}.",
+                        filter_tags.size() > 1 ? "s" : "", format_tags(filter_tags));
+                else
+                    std::println("Nothing tracked. Use 'overdue add <name>' or 'overdue addtask <name>'.");
                 return 0;
             }
 
             if (!habits.empty()) {
                 std::println("Habits");
-                std::println("{:<22} {:<21} {:<16} {:<8} {}", "Activity", "Last done", "Elapsed", "Alarm", "Streak");
-                std::println("{}", std::string(76, '-'));
+                std::println("{:<22} {:<21} {:<16} {:<8} {:<14} {}", "Activity", "Last done", "Elapsed", "Alarm", "Streak", "Tags");
+                std::println("{}", std::string(90, '-'));
                 for (const auto& a : habits) {
                     auto alarm = a.alert_after ? format_duration(*a.alert_after) : "-";
                     std::string streak_col = "-";
@@ -396,26 +441,23 @@ int main(int argc, char* argv[]) {
                         int s = compute_streak(a);
                         streak_col = std::format("{} ({})", s, format_streak_label(*a.streak));
                     }
-                    std::println("{:<22} {:<21} {:<16} {:<8} {}", a.name,
-                        format_datetime(last_done(a)), format_elapsed(last_done(a)), alarm, streak_col);
+                    std::println("{:<22} {:<21} {:<16} {:<8} {:<14} {}", a.name,
+                        format_datetime(last_done(a)), format_elapsed(last_done(a)), alarm,
+                        streak_col, format_tags(a.tags));
                 }
             }
 
             if (!tasks.empty()) {
                 if (!habits.empty()) std::println("");
                 std::println("Tasks");
-                std::println("{:<22} {:<21} {}", "Task", "Added", "Pending for");
-                std::println("{}", std::string(60, '-'));
+                std::println("{:<22} {:<21} {:<22} {}", "Task", "Added", "Status", "Tags");
+                std::println("{}", std::string(80, '-'));
                 for (const auto& a : tasks) {
-                    if (a.completed_at) {
-                        std::println("{:<22} {:<21} ✓ done ({})", a.name,
-                            format_datetime(a.logs.front().when),
-                            format_datetime(*a.completed_at));
-                    } else {
-                        std::println("{:<22} {:<21} {}", a.name,
-                            format_datetime(a.logs.front().when),
-                            format_elapsed(a.logs.front().when));
-                    }
+                    std::string status = a.completed_at
+                        ? std::format("✓ done ({})", format_datetime(*a.completed_at))
+                        : format_elapsed(a.logs.front().when);
+                    std::println("{:<22} {:<21} {:<22} {}", a.name,
+                        format_datetime(a.logs.front().when), status, format_tags(a.tags));
                 }
             }
         }
@@ -454,6 +496,8 @@ int main(int argc, char* argv[]) {
                 std::println("  target: 0 / {}{} (0%)", format_amount(*a->target),
                     a->unit ? " " + *a->unit : "");
             }
+            if (!a->tags.empty())
+                std::println("  tags:   {}", format_tags(a->tags));
         }
         else if (cmd == "delete") {
             if (argc < 3) { std::println(stderr, "Usage: overdue delete <name>"); return 1; }
@@ -520,6 +564,25 @@ int main(int argc, char* argv[]) {
                 std::println(stderr, "\"{}\" not found.", name);
             else
                 std::println("✓ Target removed for \"{}\"", name);
+        }
+        else if (cmd == "tag") {
+            if (argc < 4) { std::println(stderr, "Usage: overdue tag <name> <tag>"); return 1; }
+            std::string tag = argv[argc - 1];
+            auto name = join_args(std::span(argv + 2, argc - 3));
+            if (normalize_tag(tag).empty()) { std::println(stderr, "Empty tag."); return 1; }
+            if (!tracker.addtag(name, tag))
+                std::println(stderr, "\"{}\" not found.", name);
+            else
+                std::println("✓ Tagged \"{}\" with '{}'", name, normalize_tag(tag));
+        }
+        else if (cmd == "untag") {
+            if (argc < 4) { std::println(stderr, "Usage: overdue untag <name> <tag>"); return 1; }
+            std::string tag = argv[argc - 1];
+            auto name = join_args(std::span(argv + 2, argc - 3));
+            if (!tracker.deltag(name, tag))
+                std::println(stderr, "\"{}\" not found or not tagged '{}'.", name, normalize_tag(tag));
+            else
+                std::println("✓ Removed tag '{}' from \"{}\"", normalize_tag(tag), name);
         }
         else if (cmd == "check") {
             if (!cfg.notify_enabled) return 0;

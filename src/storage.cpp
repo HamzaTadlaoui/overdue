@@ -124,6 +124,19 @@ std::vector<Activity> Storage::load(const std::filesystem::path& path) {
         a.alert_after = read_field(item, "alert_after", read_ll);
         a.unit = read_field(item, "unit", read_string);
         a.target = read_field(item, "target", read_double);
+        if (item.contains("tags") && item["tags"].is_array()) {
+            for (const auto& t : item["tags"]) {
+                // Skip non-string or empty tags; normalize + de-dupe so loaded
+                // data matches what the add/tag commands would have produced.
+                auto s = read_string(t);
+                if (!s) continue;
+                std::string norm = normalize_tag(*s);
+                if (!norm.empty() &&
+                    std::find(a.tags.begin(), a.tags.end(), norm) == a.tags.end())
+                    a.tags.push_back(norm);
+            }
+            std::sort(a.tags.begin(), a.tags.end());
+        }
         if (auto mode = read_field(item, "streak", [](const json& s) {
                 return read_field(s, "mode", read_string);
             })) {
@@ -186,6 +199,8 @@ void Storage::save(const std::filesystem::path& path, const std::vector<Activity
             entry["unit"] = *a.unit;
         if (a.target)
             entry["target"] = *a.target;
+        if (!a.tags.empty())
+            entry["tags"] = a.tags;
         if (a.streak) {
             if (a.streak->mode == StreakMode::Interval) {
                 entry["streak"] = {{"mode", "interval"}, {"secs", a.streak->interval_secs}};
