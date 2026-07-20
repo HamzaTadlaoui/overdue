@@ -146,6 +146,84 @@ TEST(storage_corrupt_file_not_overwritten) {
     CHECK_EQ(got, corrupt);
 }
 
+// --- Strict envelope validation --------------------------------------------
+
+TEST(storage_envelope_activities_only_loads) {
+    TempDir d;
+    // An envelope identified solely by "activities" (no version/revision) is
+    // still a valid envelope and loads at revision 0.
+    write_file(d.data(),
+        R"({"activities":[{"name":"run","type":"habit","logs":[1700000000]}]})");
+    DataFile df = Storage::load(d.data());
+    CHECK_EQ(df.revision, 0LL);
+    CHECK_EQ(df.activities.size(), size_t{1});
+    CHECK_EQ(df.activities[0].name, std::string("run"));
+}
+
+TEST(storage_malformed_envelope_activities_not_array_throws) {
+    TempDir d;
+    // Envelope markers present but "activities" is not an array: must be rejected
+    // as a malformed envelope, never reinterpreted as a legacy single activity.
+    write_file(d.data(), R"({"version":2,"revision":1,"activities":"nope"})");
+    CHECK_THROWS(Storage::load(d.data()), std::runtime_error);
+}
+
+TEST(storage_envelope_marker_without_activities_throws) {
+    TempDir d;
+    // A "revision" marker with no activities array is a broken envelope, not a
+    // legacy activity object named nothing.
+    write_file(d.data(), R"({"revision":5})");
+    CHECK_THROWS(Storage::load(d.data()), std::runtime_error);
+}
+
+TEST(storage_unsupported_future_version_rejected) {
+    TempDir d;
+    write_file(d.data(), R"({"version":999,"revision":1,"activities":[]})");
+    CHECK_THROWS(Storage::load(d.data()), std::runtime_error);
+}
+
+TEST(storage_envelope_bad_version_type_throws) {
+    TempDir d;
+    write_file(d.data(), R"({"version":"two","activities":[]})");
+    CHECK_THROWS(Storage::load(d.data()), std::runtime_error);
+}
+
+TEST(storage_envelope_bad_revision_type_throws) {
+    TempDir d;
+    write_file(d.data(), R"({"version":2,"revision":"x","activities":[]})");
+    CHECK_THROWS(Storage::load(d.data()), std::runtime_error);
+}
+
+TEST(storage_envelope_negative_revision_throws) {
+    TempDir d;
+    write_file(d.data(), R"({"version":2,"revision":-3,"activities":[]})");
+    CHECK_THROWS(Storage::load(d.data()), std::runtime_error);
+}
+
+TEST(storage_malformed_envelope_not_overwritten) {
+    TempDir d;
+    // A structurally invalid (but syntactically valid JSON) envelope must never
+    // be clobbered by a save: current_revision re-parses it, throws, and aborts.
+    const std::string bad = R"({"version":2,"activities":{"not":"an array"}})";
+    write_file(d.data(), bad);
+    CHECK_THROWS(Storage::current_revision(d.data()), std::runtime_error);
+    CHECK_THROWS(Storage::save(d.data(), one("run"), 0), std::runtime_error);
+    std::ifstream f(d.data());
+    std::string got((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    CHECK_EQ(got, bad);
+}
+
+TEST(storage_future_version_not_overwritten) {
+    TempDir d;
+    const std::string future = R"({"version":999,"revision":2,"activities":[]})";
+    write_file(d.data(), future);
+    // Refuse to downgrade/overwrite data written by a newer version.
+    CHECK_THROWS(Storage::save(d.data(), one("run"), 2), std::runtime_error);
+    std::ifstream f(d.data());
+    std::string got((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    CHECK_EQ(got, future);
+}
+
 // --- Adversarial values survive a round-trip -------------------------------
 
 TEST(storage_preserves_adversarial_name_unit_tags) {

@@ -203,3 +203,21 @@ TEST(webutil_is_safe_next_rejects_offsite) {
     CHECK(!is_safe_next("evil"));
     CHECK(!is_safe_next(""));
 }
+
+TEST(webutil_is_safe_next_rejects_backslash) {
+    // Browsers fold "\" to "/", so "/\evil" would become "//evil".
+    CHECK(!is_safe_next("/\\evil.example"));
+    CHECK(!is_safe_next("/foo\\bar"));
+    CHECK(!is_safe_next("\\\\evil.example"));
+}
+
+TEST(webutil_is_safe_next_rejects_control_chars) {
+    using namespace std::string_view_literals;
+    CHECK(!is_safe_next("/foo\rbar"));            // CR
+    CHECK(!is_safe_next("/foo\nbar"));            // LF
+    CHECK(!is_safe_next("/foo\tbar"));            // TAB
+    CHECK(!is_safe_next("/foo\x7f" "bar"));       // DEL (split literal: \x is greedy)
+    CHECK(!is_safe_next("/foo\0bar"sv));          // NUL (embedded, length-counted)
+    // A CRLF-injection attempt into the redirect header is rejected.
+    CHECK(!is_safe_next("/\r\nLocation: http://evil"));
+}

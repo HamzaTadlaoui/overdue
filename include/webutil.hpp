@@ -206,11 +206,22 @@ inline std::string render_tag_chips(const std::vector<std::string>& tags) {
 }
 
 // True when `next` is a safe same-origin redirect target: a rooted path that is
-// not protocol-relative ("//host"). Used to reject open-redirect attempts while
-// still allowing filtered dashboards ("/?tag=..") and detail pages.
+// not protocol-relative and carries no characters a browser might normalize into
+// one. Used to reject open-redirect attempts while still allowing filtered
+// dashboards ("/?tag=..") and detail pages ("/activity?name=..").
+//
+// Rejected: anything not starting with '/', a leading "//" (protocol-relative),
+// any backslash (browsers fold "\" to "/", so "/\evil" becomes "//evil"), and
+// any control character (NUL, TAB, CR, LF, …) which could truncate the value or
+// smuggle a header when echoed into a Location.
 inline bool is_safe_next(std::string_view next) {
-    return next.size() >= 1 && next.front() == '/' &&
-           !(next.size() >= 2 && next[1] == '/');
+    if (next.empty() || next.front() != '/') return false;
+    if (next.size() >= 2 && next[1] == '/') return false; // //host
+    for (unsigned char c : next) {
+        if (c < 0x20 || c == 0x7f) return false;           // control chars
+        if (c == '\\') return false;                        // backslash → '/'
+    }
+    return true;
 }
 
 } // namespace webutil

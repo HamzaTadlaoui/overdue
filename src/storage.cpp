@@ -89,22 +89,67 @@ static json parse_file(const std::filesystem::path& path) {
     return root;
 }
 
-// Split a parsed document into (revision, activities-array), understanding both
-// the v2 envelope and the two legacy shapes. `holder` backs the returned view
-// when a single object has to be wrapped into an array.
-static void split_document(const json& root, long long& revision,
-                           const json*& activities, json& holder) {
-    if (root.is_object() && root.contains("activities") &&
-        root["activities"].is_array()) {
-        // v2 envelope.
-        revision = read_field(root, "revision", read_ll).value_or(0);
+// True if `root` looks like a versioned envelope — i.e. it carries any of the
+// envelope-only marker keys. Presence of a marker commits us to the envelope
+// format: we then validate it strictly rather than silently reinterpreting a
+// broken envelope as a legacy single-activity object.
+static bool looks_like_envelope(const json& root) {
+    return root.is_object() &&
+           (root.contains("version") || root.contains("revision") ||
+            root.contains("activities"));
+}
+
+// Raised for a structurally invalid envelope (valid JSON, wrong shape) or an
+// unsupported version. Distinct message so the caller can leave the file
+// untouched instead of overwriting it.
+static std::runtime_error envelope_error(const std::filesystem::path& path,
+                                         const std::string& why) {
+    return std::runtime_error(
+        "Cannot load " + path.string() + " — " + why +
+        ". The file was left unchanged; fix or remove it to continue.");
+}
+
+// Split a parsed document into (revision, activities-array). A document with any
+// envelope marker is validated strictly as a v2 envelope (throwing on anything
+// malformed or from an unsupported future version); otherwise the two legacy
+// shapes — a bare array, or a single activity object — are accepted. `holder`
+// backs the returned view when a single object has to be wrapped into an array.
+static void split_document(const std::filesystem::path& path, const json& root,
+                           long long& revision, const json*& activities,
+                           json& holder) {
+    if (looks_like_envelope(root)) {
+        // version: if present it must be a plain integer we understand. A newer
+        // version than we know how to read is rejected rather than misparsed.
+        if (root.contains("version") && !root["version"].is_null()) {
+            const json& v = root["version"];
+            if (!(v.is_number_integer() || v.is_number_unsigned()))
+                throw envelope_error(path, "\"version\" is not an integer");
+            long long ver = v.get<long long>();
+            if (ver < 1 || ver > FORMAT_VERSION)
+                throw envelope_error(path, "unsupported data format version " +
+                                               std::to_string(ver));
+        }
+        // activities: mandatory and must be an array.
+        if (!root.contains("activities") || !root["activities"].is_array())
+            throw envelope_error(path, "\"activities\" is missing or not an array");
+        // revision: optional, but if present must be a non-negative integer.
+        revision = 0;
+        if (root.contains("revision") && !root["revision"].is_null()) {
+            const json& r = root["revision"];
+            if (!(r.is_number_integer() || r.is_number_unsigned()))
+                throw envelope_error(path, "\"revision\" is not an integer");
+            long long rev = r.get<long long>();
+            if (rev < 0)
+                throw envelope_error(path, "\"revision\" is negative");
+            revision = rev;
+        }
         activities = &root["activities"];
     } else if (root.is_array()) {
         // Legacy: bare array of activities.
         revision = 0;
         activities = &root;
     } else if (root.is_object()) {
-        // Legacy: a single activity object — wrap it.
+        // Legacy: a single activity object (no envelope markers) — wrap it.
         revision = 0;
         holder = json::array({root});
         activities = &holder;
@@ -122,7 +167,7 @@ DataFile Storage::load(const std::filesystem::path& path) {
     long long revision = 0;
     const json* items = nullptr;
     json holder;
-    split_document(root, revision, items, holder);
+    split_document(path, root, revision, items, holder);
 
     DataFile out;
     out.revision = revision;
@@ -212,7 +257,7 @@ long long Storage::current_revision(const std::filesystem::path& path) {
     long long revision = 0;
     const json* items = nullptr;
     json holder;
-    split_document(root, revision, items, holder);
+    split_document(path, root, revision, items, holder);
     return revision;
 }
 
