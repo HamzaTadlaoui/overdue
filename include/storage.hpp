@@ -25,6 +25,10 @@ public:
 struct DataFile {
     std::vector<Activity> activities;
     long long revision = 0;
+    // True when the data was recovered rather than read cleanly: some entries
+    // were skipped, the envelope metadata was malformed, or the file came from a
+    // newer format version. The next write should back up the original first.
+    bool repaired = false;
 };
 
 class Storage {
@@ -37,11 +41,14 @@ public:
     //  * Acquires the advisory file lock for the whole check-and-write.
     //  * Fails with StaleWriteError if the on-disk revision no longer matches
     //    `base_revision` (someone else wrote in the meantime).
+    //  * If `backup_original` is set, copies the existing file to "<path>.bak"
+    //    before overwriting it (used when the loaded data was repaired), and
+    //    fails rather than overwrite if that backup can't be made.
     //  * Otherwise writes the data with revision `base_revision + 1` via a temp
     //    file + rename, and returns the new revision.
     static long long save(const std::filesystem::path& path,
                           const std::vector<Activity>& activities,
-                          long long base_revision);
+                          long long base_revision, bool backup_original = false);
 
     // The current on-disk revision without loading everything (0 if the file is
     // absent or legacy). Throws if the file exists but cannot be parsed.

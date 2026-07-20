@@ -91,70 +91,89 @@ static json parse_file(const std::filesystem::path& path) {
 
 // True if `root` looks like a versioned envelope — i.e. it carries any of the
 // envelope-only marker keys. Presence of a marker commits us to the envelope
-// format: we then validate it strictly rather than silently reinterpreting a
-// broken envelope as a legacy single-activity object.
+// format rather than reinterpreting it as a legacy single-activity object.
 static bool looks_like_envelope(const json& root) {
     return root.is_object() &&
            (root.contains("version") || root.contains("revision") ||
             root.contains("activities"));
 }
 
-// Raised for a structurally invalid envelope (valid JSON, wrong shape) or an
-// unsupported version. Distinct message so the caller can leave the file
-// untouched instead of overwriting it.
-static std::runtime_error envelope_error(const std::filesystem::path& path,
-                                         const std::string& why) {
+// Raised only when a file yields no recoverable data at all — valid JSON whose
+// envelope has no usable activities array. Distinct message so the caller leaves
+// the file untouched instead of overwriting it.
+static std::runtime_error unrecoverable_error(const std::filesystem::path& path,
+                                              const std::string& why) {
     return std::runtime_error(
         "Cannot load " + path.string() + " — " + why +
-        ". The file was left unchanged; fix or remove it to continue.");
+        ". No data could be recovered; the file was left unchanged. "
+        "Fix or remove it to continue.");
 }
 
-// Split a parsed document into (revision, activities-array). A document with any
-// envelope marker is validated strictly as a v2 envelope (throwing on anything
-// malformed or from an unsupported future version); otherwise the two legacy
-// shapes — a bare array, or a single activity object — are accepted. `holder`
-// backs the returned view when a single object has to be wrapped into an array.
+// What split_document learned about the envelope beyond the data itself.
+struct DocInfo {
+    bool metadata_repaired = false; // version/revision missing/null/wrong-typed
+    bool future_version = false;    // version newer than this build understands
+};
+
+// Split a parsed document into (revision, activities-array), best-effort. Any
+// envelope marker selects the envelope format, but malformed *metadata* (a
+// null/wrong-typed/absent version or revision, or a version from the future) is
+// tolerated: it is flagged in `info` (so the caller can warn and back up the
+// original before rewriting) and recovery proceeds from the activities array.
+// The only hard failure is an envelope whose activities cannot be read as an
+// array — there is genuinely nothing to recover, so we throw and preserve it.
+// The two legacy shapes (a bare array, or a single activity object) are accepted
+// unchanged. `holder` backs the returned view when an object must be wrapped.
 static void split_document(const std::filesystem::path& path, const json& root,
                            long long& revision, const json*& activities,
-                           json& holder) {
+                           json& holder, DocInfo& info) {
+    revision = 0;
+    info = DocInfo{};
+
     if (looks_like_envelope(root)) {
-        // version: if present it must be a plain integer we understand. A newer
-        // version than we know how to read is rejected rather than misparsed.
-        if (root.contains("version") && !root["version"].is_null()) {
+        // version — advisory. Recognized integers <= FORMAT_VERSION are normal;
+        // a higher integer is a future file (read conservatively, back up before
+        // any rewrite); anything else (null / wrong type / < 1) is just ignored.
+        if (root.contains("version")) {
             const json& v = root["version"];
-            if (!(v.is_number_integer() || v.is_number_unsigned()))
-                throw envelope_error(path, "\"version\" is not an integer");
-            long long ver = v.get<long long>();
-            if (ver < 1 || ver > FORMAT_VERSION)
-                throw envelope_error(path, "unsupported data format version " +
-                                               std::to_string(ver));
+            if (v.is_number_integer() || v.is_number_unsigned()) {
+                long long ver = v.get<long long>();
+                if (ver > FORMAT_VERSION) info.future_version = true;
+                else if (ver < 1) info.metadata_repaired = true;
+            } else {
+                info.metadata_repaired = true; // null or non-integer version
+            }
         }
-        // activities: mandatory and must be an array.
-        if (!root.contains("activities") || !root["activities"].is_array())
-            throw envelope_error(path, "\"activities\" is missing or not an array");
-        // revision: optional, but if present must be a non-negative integer.
-        revision = 0;
+
+        // revision — optional. Recover a clean non-negative integer as-is; accept
+        // a wrong-typed value tolerantly but flag it; default to 0 otherwise.
         if (root.contains("revision") && !root["revision"].is_null()) {
             const json& r = root["revision"];
-            if (!(r.is_number_integer() || r.is_number_unsigned()))
-                throw envelope_error(path, "\"revision\" is not an integer");
-            long long rev = r.get<long long>();
-            if (rev < 0)
-                throw envelope_error(path, "\"revision\" is negative");
-            revision = rev;
+            if (r.is_number_integer() || r.is_number_unsigned()) {
+                long long rev = r.get<long long>();
+                if (rev >= 0) revision = rev;
+                else info.metadata_repaired = true; // negative → default 0
+            } else {
+                if (auto rr = read_ll(r); rr && *rr >= 0) revision = *rr;
+                info.metadata_repaired = true;      // wrong type → recovered/reset
+            }
+        } else if (root.contains("revision")) {
+            info.metadata_repaired = true;          // present but null
         }
+
+        // activities — the one field we cannot do without. If it is not an array
+        // there is nothing to recover, so refuse (and thereby preserve the file).
+        if (!root.contains("activities") || !root["activities"].is_array())
+            throw unrecoverable_error(path, "no readable \"activities\" array");
         activities = &root["activities"];
     } else if (root.is_array()) {
         // Legacy: bare array of activities.
-        revision = 0;
         activities = &root;
     } else if (root.is_object()) {
         // Legacy: a single activity object (no envelope markers) — wrap it.
-        revision = 0;
         holder = json::array({root});
         activities = &holder;
     } else {
-        revision = 0;
         holder = json::array();
         activities = &holder;
     }
@@ -167,7 +186,8 @@ DataFile Storage::load(const std::filesystem::path& path) {
     long long revision = 0;
     const json* items = nullptr;
     json holder;
-    split_document(path, root, revision, items, holder);
+    DocInfo info;
+    split_document(path, root, revision, items, holder, info);
 
     DataFile out;
     out.revision = revision;
@@ -240,6 +260,12 @@ DataFile Storage::load(const std::filesystem::path& path) {
         out.activities.push_back(std::move(a));
     }
 
+    // The data was recovered rather than read cleanly if any entry was skipped or
+    // the envelope metadata was malformed or from the future. Flag it so the next
+    // write backs up the original first, and warn so the recovery is never silent.
+    out.repaired = skipped_activities > 0 || skipped_logs > 0 ||
+                   info.metadata_repaired || info.future_version;
+
     if (skipped_activities > 0 || skipped_logs > 0)
         std::println(stderr,
             "Warning: recovered data from {} — skipped {} unreadable "
@@ -247,6 +273,18 @@ DataFile Storage::load(const std::filesystem::path& path) {
             path.string(), skipped_activities,
             skipped_activities == 1 ? "y" : "ies",
             skipped_logs, skipped_logs == 1 ? "y" : "ies");
+    if (info.future_version)
+        std::println(stderr,
+            "Warning: {} was written by a newer version of overdue (format "
+            "version above {}). Reading it conservatively; the original will be "
+            "backed up to {}.bak before any change is written.",
+            path.string(), FORMAT_VERSION, path.string());
+    else if (info.metadata_repaired)
+        std::println(stderr,
+            "Warning: {} had malformed envelope metadata (version/revision); "
+            "recovered the activities. The original will be backed up to {}.bak "
+            "before any change is written.",
+            path.string(), path.string());
 
     return out;
 }
@@ -257,13 +295,14 @@ long long Storage::current_revision(const std::filesystem::path& path) {
     long long revision = 0;
     const json* items = nullptr;
     json holder;
-    split_document(path, root, revision, items, holder);
+    DocInfo info;
+    split_document(path, root, revision, items, holder, info);
     return revision;
 }
 
 long long Storage::save(const std::filesystem::path& path,
                         const std::vector<Activity>& activities,
-                        long long base_revision) {
+                        long long base_revision, bool backup_original) {
     std::filesystem::create_directories(path.parent_path());
 
     // Hold the advisory lock for the whole check-and-write so no other process
@@ -274,6 +313,22 @@ long long Storage::save(const std::filesystem::path& path,
     if (disk_revision != base_revision)
         throw StaleWriteError(base_revision, disk_revision);
     long long new_revision = base_revision + 1;
+
+    // The in-memory data was recovered/repaired (skipped entries, malformed
+    // metadata, or a newer format we can't fully represent). Copy the original
+    // aside before overwriting it, so the pre-repair file is never lost and a
+    // future-version file is never silently downgraded without a preserved copy.
+    if (backup_original && std::filesystem::exists(path)) {
+        auto bak = path;
+        bak += ".bak";
+        std::error_code ec;
+        std::filesystem::copy_file(
+            path, bak, std::filesystem::copy_options::overwrite_existing, ec);
+        if (ec)
+            throw std::runtime_error("Refusing to overwrite recovered data: "
+                "could not back up " + path.string() + " to " + bak.string() +
+                " (" + ec.message() + ").");
+    }
 
     json items = json::array();
     for (const auto& a : activities) {

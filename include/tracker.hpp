@@ -62,6 +62,9 @@ private:
     // Revision the in-memory state is based on; save() commits revision_+1 and
     // fails with StaleWriteError if the on-disk revision has moved on since.
     long long revision_ = 0;
+    // Set when the loaded data was recovered/repaired; the next save backs up the
+    // original file first, then clears this so later saves write normally.
+    bool needs_backup_ = false;
 
     // Drop unlogged entries past the grace window. Returns true if any were purged.
     bool purge_expired();

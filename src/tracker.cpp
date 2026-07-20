@@ -46,6 +46,7 @@ Tracker::Tracker(std::filesystem::path data_path, long long unlog_grace_secs)
     DataFile df = Storage::load(path_);
     activities_ = std::move(df.activities);
     revision_ = df.revision;
+    needs_backup_ = df.repaired;
     // Purging expired tombstones is an opportunistic cleanup that also runs on
     // read-only paths (list/show/web render), so a concurrent write must not
     // turn it into a hard error: on conflict, leave the tombstones for the next
@@ -292,4 +293,7 @@ std::optional<Activity> Tracker::find(const std::string& name) const {
     return it != activities_.end() ? std::optional<Activity>{*it} : std::nullopt;
 }
 
-void Tracker::save() { revision_ = Storage::save(path_, activities_, revision_); }
+void Tracker::save() {
+    revision_ = Storage::save(path_, activities_, revision_, needs_backup_);
+    needs_backup_ = false; // original preserved once; later saves write normally
+}

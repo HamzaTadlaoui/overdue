@@ -146,64 +146,114 @@ TEST(storage_corrupt_file_not_overwritten) {
     CHECK_EQ(got, corrupt);
 }
 
-// --- Strict envelope validation --------------------------------------------
+// --- Envelope detection + best-effort recovery -----------------------------
 
 TEST(storage_envelope_activities_only_loads) {
     TempDir d;
     // An envelope identified solely by "activities" (no version/revision) is
-    // still a valid envelope and loads at revision 0.
+    // still a valid envelope and loads cleanly at revision 0.
     write_file(d.data(),
         R"({"activities":[{"name":"run","type":"habit","logs":[1700000000]}]})");
     DataFile df = Storage::load(d.data());
     CHECK_EQ(df.revision, 0LL);
+    CHECK(!df.repaired);
     CHECK_EQ(df.activities.size(), size_t{1});
     CHECK_EQ(df.activities[0].name, std::string("run"));
 }
 
-TEST(storage_malformed_envelope_activities_not_array_throws) {
+TEST(storage_recovers_with_malformed_metadata) {
     TempDir d;
-    // Envelope markers present but "activities" is not an array: must be rejected
-    // as a malformed envelope, never reinterpreted as a legacy single activity.
+    // version/revision are null (malformed metadata) but the activities are fine:
+    // recover them, default revision to 0, and flag the load as repaired.
+    write_file(d.data(),
+        R"({"version":null,"revision":null,"activities":[{"name":"run","type":"habit","logs":[1700000000]}]})");
+    DataFile df = Storage::load(d.data());
+    CHECK_EQ(df.activities.size(), size_t{1});
+    CHECK_EQ(df.activities[0].name, std::string("run"));
+    CHECK_EQ(df.revision, 0LL);
+    CHECK(df.repaired);           // metadata was malformed -> repaired
+}
+
+TEST(storage_recovers_with_wrong_metadata_types) {
+    TempDir d;
+    // version is a string, revision is a string number: tolerate both, recovering
+    // the revision value where possible, and flag repaired.
+    write_file(d.data(),
+        R"({"version":"two","revision":"7","activities":[{"name":"run","type":"habit","logs":[1700000000]}]})");
+    DataFile df = Storage::load(d.data());
+    CHECK_EQ(df.activities.size(), size_t{1});
+    CHECK_EQ(df.revision, 7LL);   // "7" recovered tolerantly
+    CHECK(df.repaired);
+}
+
+TEST(storage_negative_revision_defaults_and_repairs) {
+    TempDir d;
+    write_file(d.data(),
+        R"({"version":2,"revision":-3,"activities":[{"name":"run","type":"habit","logs":[1700000000]}]})");
+    DataFile df = Storage::load(d.data());
+    CHECK_EQ(df.activities.size(), size_t{1});
+    CHECK_EQ(df.revision, 0LL);   // negative -> default 0
+    CHECK(df.repaired);
+}
+
+TEST(storage_partial_recovery_skips_invalid) {
+    TempDir d;
+    // Two valid activities among invalid ones (no name, no logs, non-object).
+    // The valid ones are recovered; the rest skipped; the load is flagged repaired.
+    write_file(d.data(), R"({
+        "version":2, "revision":4,
+        "activities":[
+            {"name":"good1","type":"habit","logs":[1700000000]},
+            {"type":"habit","logs":[1700000000]},
+            {"name":"noLogs","type":"habit","logs":[]},
+            42,
+            {"name":"good2","type":"task","logs":[1700000100]}
+        ]
+    })");
+    DataFile df = Storage::load(d.data());
+    CHECK_EQ(df.revision, 4LL);
+    CHECK_EQ(df.activities.size(), size_t{2});
+    CHECK_EQ(df.activities[0].name, std::string("good1"));
+    CHECK_EQ(df.activities[1].name, std::string("good2"));
+    CHECK(df.repaired);           // entries were skipped
+}
+
+TEST(storage_future_version_recovers_activities) {
+    TempDir d;
+    // A newer format version whose activities structure is still understandable:
+    // read the activities conservatively, keep the revision, flag repaired so the
+    // original is backed up before any rewrite (no silent downgrade).
+    write_file(d.data(),
+        R"({"version":99,"revision":5,"activities":[{"name":"run","type":"habit","logs":[1700000000]}]})");
+    DataFile df = Storage::load(d.data());
+    CHECK_EQ(df.activities.size(), size_t{1});
+    CHECK_EQ(df.activities[0].name, std::string("run"));
+    CHECK_EQ(df.revision, 5LL);
+    CHECK(df.repaired);
+}
+
+// --- Hard failures: nothing recoverable, never overwritten -----------------
+
+TEST(storage_envelope_activities_not_array_throws) {
+    TempDir d;
+    // Envelope markers present but "activities" is not an array: there is no data
+    // to recover, so refuse (and thereby preserve the file) rather than treat it
+    // as a legacy single activity.
     write_file(d.data(), R"({"version":2,"revision":1,"activities":"nope"})");
     CHECK_THROWS(Storage::load(d.data()), std::runtime_error);
 }
 
 TEST(storage_envelope_marker_without_activities_throws) {
     TempDir d;
-    // A "revision" marker with no activities array is a broken envelope, not a
-    // legacy activity object named nothing.
+    // A "revision" marker with no activities array yields nothing recoverable.
     write_file(d.data(), R"({"revision":5})");
     CHECK_THROWS(Storage::load(d.data()), std::runtime_error);
 }
 
-TEST(storage_unsupported_future_version_rejected) {
+TEST(storage_unrecoverable_envelope_not_overwritten) {
     TempDir d;
-    write_file(d.data(), R"({"version":999,"revision":1,"activities":[]})");
-    CHECK_THROWS(Storage::load(d.data()), std::runtime_error);
-}
-
-TEST(storage_envelope_bad_version_type_throws) {
-    TempDir d;
-    write_file(d.data(), R"({"version":"two","activities":[]})");
-    CHECK_THROWS(Storage::load(d.data()), std::runtime_error);
-}
-
-TEST(storage_envelope_bad_revision_type_throws) {
-    TempDir d;
-    write_file(d.data(), R"({"version":2,"revision":"x","activities":[]})");
-    CHECK_THROWS(Storage::load(d.data()), std::runtime_error);
-}
-
-TEST(storage_envelope_negative_revision_throws) {
-    TempDir d;
-    write_file(d.data(), R"({"version":2,"revision":-3,"activities":[]})");
-    CHECK_THROWS(Storage::load(d.data()), std::runtime_error);
-}
-
-TEST(storage_malformed_envelope_not_overwritten) {
-    TempDir d;
-    // A structurally invalid (but syntactically valid JSON) envelope must never
-    // be clobbered by a save: current_revision re-parses it, throws, and aborts.
+    // Structurally invalid (but syntactically valid JSON) envelope: current_revision
+    // re-parses it, throws, and aborts the save, leaving the file untouched.
     const std::string bad = R"({"version":2,"activities":{"not":"an array"}})";
     write_file(d.data(), bad);
     CHECK_THROWS(Storage::current_revision(d.data()), std::runtime_error);
@@ -213,15 +263,49 @@ TEST(storage_malformed_envelope_not_overwritten) {
     CHECK_EQ(got, bad);
 }
 
-TEST(storage_future_version_not_overwritten) {
+// --- Backup before rewriting recovered data --------------------------------
+
+TEST(storage_backup_before_rewrite_preserves_original) {
     TempDir d;
-    const std::string future = R"({"version":999,"revision":2,"activities":[]})";
+    const std::string orig =
+        R"({"version":2,"revision":3,"activities":[{"name":"old","type":"habit","logs":[1700000000]}]})";
+    write_file(d.data(), orig);
+    DataFile df = Storage::load(d.data());
+
+    // Explicitly request a backup on save (what Tracker does for repaired loads).
+    long long rev = Storage::save(d.data(), one("new"), df.revision, /*backup=*/true);
+    CHECK_EQ(rev, 4LL);
+
+    // The backup holds the exact original bytes.
+    auto bak = d.data(); bak += ".bak";
+    CHECK(std::filesystem::exists(bak));
+    std::ifstream bf(bak);
+    std::string backed((std::istreambuf_iterator<char>(bf)), std::istreambuf_iterator<char>());
+    CHECK_EQ(backed, orig);
+
+    // The live file now holds the new, upgraded data.
+    DataFile after = Storage::load(d.data());
+    CHECK_EQ(after.activities.size(), size_t{1});
+    CHECK_EQ(after.activities[0].name, std::string("new"));
+    CHECK_EQ(after.revision, 4LL);
+}
+
+TEST(storage_future_version_backed_up_then_upgraded) {
+    TempDir d;
+    const std::string future = R"({"version":99,"revision":2,"activities":[{"name":"run","type":"habit","logs":[1700000000]}]})";
     write_file(d.data(), future);
-    // Refuse to downgrade/overwrite data written by a newer version.
-    CHECK_THROWS(Storage::save(d.data(), one("run"), 2), std::runtime_error);
-    std::ifstream f(d.data());
-    std::string got((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-    CHECK_EQ(got, future);
+    DataFile df = Storage::load(d.data());
+    CHECK(df.repaired);                 // future version flags repair
+    CHECK_EQ(df.revision, 2LL);
+
+    // Saving recovered data from a future file backs up the original (no silent
+    // downgrade) and then writes our format.
+    long long rev = Storage::save(d.data(), df.activities, df.revision, /*backup=*/true);
+    CHECK_EQ(rev, 3LL);
+    auto bak = d.data(); bak += ".bak";
+    std::ifstream bf(bak);
+    std::string backed((std::istreambuf_iterator<char>(bf)), std::istreambuf_iterator<char>());
+    CHECK_EQ(backed, future);           // newer-format original preserved verbatim
 }
 
 // --- Adversarial values survive a round-trip -------------------------------
