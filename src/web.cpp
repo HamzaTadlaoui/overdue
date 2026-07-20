@@ -2,6 +2,7 @@
 #include "tracker.hpp"
 #include "stats.hpp"
 #include "config.hpp"
+#include "webutil.hpp"
 
 #include <httplib.h>
 
@@ -21,39 +22,18 @@
 
 using Outcome = std::pair<bool, std::string>; // {ok, message}
 
+// Every user-controlled value rendered into the page is escaped for its exact
+// context: esc_text between tags, esc_attr inside a quoted attribute, url_encode
+// for a URL component. These live in webutil.hpp so tests exercise them directly.
+using webutil::esc_attr;
+using webutil::esc_text;
+using webutil::url_encode;
+using webutil::activity_url;
+
 // The web server reads from the same data as the CLI; load the configured unlog
 // grace so its Tracker instances purge expired tombstones with the same window.
 static long long web_grace_secs() {
     return Config::load(Config::default_path()).unlog_grace_secs;
-}
-
-// Activity names and units are user-controlled and rendered into the page, so
-// escape them even though the server only ever binds to loopback.
-static std::string html_escape(const std::string& s) {
-    std::string out;
-    out.reserve(s.size());
-    for (char c : s) {
-        switch (c) {
-            case '&':  out += "&amp;";  break;
-            case '<':  out += "&lt;";   break;
-            case '>':  out += "&gt;";   break;
-            case '"':  out += "&quot;"; break;
-            case '\'': out += "&#39;";  break;
-            default:   out += c;
-        }
-    }
-    return out;
-}
-
-// Percent-encode for putting a flash message into a redirect query string.
-static std::string url_encode(const std::string& s) {
-    static const char* hex = "0123456789ABCDEF";
-    std::string out;
-    for (unsigned char c : s) {
-        if (std::isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') out += c;
-        else { out += '%'; out += hex[c >> 4]; out += hex[c & 0xf]; }
-    }
-    return out;
 }
 
 // Absolute unix seconds, so the browser can tick the elapsed timer live.
@@ -239,6 +219,23 @@ static const char* PAGE_HEAD = R"HTML(<!DOCTYPE html>
   .chip.trend.up{color:var(--ok); border-color:rgba(70,211,154,.3);}
   .chip.trend.down{color:var(--danger); border-color:rgba(255,107,107,.3);}
 
+  /* tags + filter bar */
+  a.chip{text-decoration:none;}
+  .chips.tags{justify-content:flex-start; margin-top:.6rem;}
+  .chip.tag{color:var(--accent); border-color:rgba(124,140,255,.3);}
+  a.chip.tag:hover{border-color:var(--accent); color:var(--text);}
+  .chip.tag.active{background:var(--accent); color:#0b0d11; border-color:transparent; font-weight:600;}
+  .filterbar{display:flex; flex-wrap:wrap; align-items:center; gap:.4rem; margin-bottom:1.2rem;
+        background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:.6rem .8rem;}
+  .filter-label{font-size:.7rem; text-transform:uppercase; letter-spacing:.06em; color:var(--faint); margin-right:.15rem;}
+  .filter-label:not(:first-child){margin-left:.5rem;}
+  .chip.type.active{background:var(--surface-2); color:var(--text); border-color:var(--border-strong); font-weight:600;}
+  .chip.clear{color:var(--danger); border-color:rgba(255,107,107,.3);}
+  .tagform{display:inline-flex; gap:.3rem; align-items:center; margin:0;}
+  .tag-remove{margin-left:.3rem; color:var(--faint); cursor:pointer; border:none; background:none; font-size:.9rem; padding:0 .1rem;}
+  .tag-remove:hover{color:var(--danger);}
+  .taglist .chip{display:inline-flex; align-items:center;}
+
   /* clickable entry names linking to the detail page */
   .name a{color:inherit; text-decoration:none; border-bottom:1px dashed transparent; transition:.15s;}
   .name a:hover{color:var(--accent); border-bottom-color:rgba(124,140,255,.5);}
@@ -292,6 +289,18 @@ static const char* PAGE_SCRIPT = R"HTML(<script>
   }
   tick(); setInterval(tick, 1000);
 
+  // The URL the page should settle on: the current path and query with only the
+  // transient flash params dropped, so functional params (name, tag, type) are
+  // preserved. Built with the URL API rather than by hand so encoding of spaces,
+  // punctuation, Unicode and reserved characters stays correct.
+  function canonicalUrl(){
+    var u = new URL(window.location.href);
+    u.searchParams.delete("ok");
+    u.searchParams.delete("err");
+    var qs = u.searchParams.toString();
+    return u.pathname + (qs ? "?" + qs : "");
+  }
+
   // Don't yank the page out from under someone who's typing or mid-action.
   function busy(){
     var a = document.activeElement;
@@ -300,10 +309,15 @@ static const char* PAGE_SCRIPT = R"HTML(<script>
     if(window.getSelection && String(window.getSelection())) return true;
     return false;
   }
-  setInterval(function(){ if(!busy()) location.replace(location.pathname); }, 30000);
+  // Refresh onto the canonical page+query so a filtered dashboard or an activity
+  // detail page stays put across the 30-second reload.
+  setInterval(function(){ if(!busy()) location.replace(canonicalUrl()); }, 30000);
 
-  // Drop the flash from the URL so a manual reload won't replay it, then fade it out.
-  if(location.search) history.replaceState(null, "", location.pathname);
+  // Drop only the flash params from the URL so a manual reload won't replay the
+  // toast, while keeping the functional query (e.g. ?name=..., ?tag=...).
+  var canon = canonicalUrl();
+  if(canon !== location.pathname + location.search)
+    history.replaceState(null, "", canon);
   var t = document.querySelector(".toast");
   if(t) setTimeout(function(){ t.classList.add("hide"); }, 3500);
 })();
@@ -333,13 +347,8 @@ static std::string page_tail() {
         + PAGE_SCRIPT + "</body>\n</html>\n";
 }
 
-// Link to an entry's detail page; the name is the query, so url-encode it.
-static std::string activity_url(const std::string& name) {
-    return "/activity?name=" + url_encode(name);
-}
-
 static std::string hidden_input(const char* name, const std::string& value) {
-    return std::format("<input type=\"hidden\" name=\"{}\" value=\"{}\">", name, html_escape(value));
+    return std::format("<input type=\"hidden\" name=\"{}\" value=\"{}\">", name, esc_attr(value));
 }
 
 // A form carrying the CSRF token, a preset entry name, and (optionally) the page
@@ -357,7 +366,8 @@ static std::string make_form(const std::string& token, const std::string& next,
 static std::string progress_bar(const Activity& a) {
     auto qs = quantity_stats(a);
     double total = qs ? qs->total : 0.0;
-    std::string unit = a.unit ? " " + *a.unit : "";
+    // Rendered only into text nodes below, so escape the user-supplied unit here.
+    std::string unit = a.unit ? " " + esc_text(*a.unit) : "";
     if (a.target) {
         double pct = *a.target > 0 ? 100.0 * total / *a.target : 0.0;
         double fill = std::min(100.0, std::max(0.0, pct));
@@ -407,31 +417,91 @@ static std::string manage_controls(const std::string& token, const std::string& 
     return m;
 }
 
+// Filter bar: type toggles + a toggle chip per known tag, so the dashboard can
+// be narrowed to habits/tasks and to any set of tags (match-any, like the CLI).
+// Every link is a canonical dashboard URL the periodic refresh preserves.
+static std::string render_filterbar(const std::set<std::string>& all_tags,
+                                    const std::vector<std::string>& filter_tags,
+                                    const std::string& filter_type) {
+    if (all_tags.empty() && filter_tags.empty() && filter_type.empty()) return "";
+
+    auto active_tag = [&](const std::string& t) {
+        return std::find(filter_tags.begin(), filter_tags.end(), t) != filter_tags.end();
+    };
+
+    std::string fb = "<div class=\"filterbar\"><span class=\"filter-label\">Type</span>";
+    auto typelink = [&](const char* label, const char* val) {
+        return std::format("<a class=\"chip type{}\" href=\"{}\">{}</a>",
+            filter_type == val ? " active" : "",
+            esc_attr(webutil::dashboard_url(filter_tags, val)), label);
+    };
+    fb += typelink("All", "");
+    fb += typelink("Habits", "habit");
+    fb += typelink("Tasks", "task");
+
+    if (!all_tags.empty()) {
+        fb += "<span class=\"filter-label\">Tags</span>";
+        for (const auto& t : all_tags) {
+            std::vector<std::string> toggled = filter_tags;
+            if (active_tag(t)) toggled.erase(std::remove(toggled.begin(), toggled.end(), t), toggled.end());
+            else toggled.push_back(t);
+            fb += std::format("<a class=\"chip tag{}\" href=\"{}\">#{}</a>",
+                active_tag(t) ? " active" : "",
+                esc_attr(webutil::dashboard_url(toggled, filter_type)), esc_text(t));
+        }
+    }
+    if (!filter_tags.empty() || !filter_type.empty())
+        fb += "<a class=\"chip clear\" href=\"/\">clear</a>";
+    fb += "</div>\n";
+    return fb;
+}
+
 static std::string render_page(const std::filesystem::path& data_path,
                                const std::string& token,
-                               std::optional<Outcome> flash) {
+                               std::optional<Outcome> flash,
+                               const std::vector<std::string>& filter_tags,
+                               const std::string& filter_type) {
     // Reload on every request so the page reflects edits from the CLI or other tabs.
     Tracker tracker{data_path, web_grace_secs()};
-    auto habits  = tracker.habits();
-    auto tasks   = tracker.tasks(/*include_done=*/true);
     auto overdue = tracker.overdue_activities();
     auto gs      = compute_global(tracker.all());
 
     std::unordered_set<std::string> overdue_names;
     for (const auto& a : overdue) overdue_names.insert(a.name);
 
-    std::string tok = html_escape(token);
+    // The universe of tags for the filter bar (sorted + unique via std::set).
+    std::set<std::string> all_tags;
+    for (const auto& a : tracker.all())
+        for (const auto& t : a.tags) all_tags.insert(t);
 
-    // Dashboard forms post here and bounce back to the dashboard (empty `next`).
+    // Match-any tag filter + optional type restriction, mirroring `list`.
+    auto matches = [&](const Activity& a) {
+        if (filter_tags.empty()) return true;
+        for (const auto& t : filter_tags) if (has_tag(a, t)) return true;
+        return false;
+    };
+    bool show_habits = filter_type != "task";
+    bool show_tasks  = filter_type != "habit";
+
+    std::vector<Activity> habits, tasks;
+    if (show_habits) for (auto& a : tracker.habits()) if (matches(a)) habits.push_back(a);
+    if (show_tasks)  for (auto& a : tracker.tasks(/*include_done=*/true)) if (matches(a)) tasks.push_back(a);
+
+    std::string tok = esc_attr(token);
+
+    // Redirects after a mutation return to the current filtered view so the
+    // active filters survive the action (empty => plain dashboard).
+    std::string dash_next = webutil::dashboard_url(filter_tags, filter_type);
+    std::string next_for_forms = (dash_next == "/") ? std::string() : dash_next;
     auto nform = [&](const char* action, const std::string& name, const std::string& inner) {
-        return make_form(token, "", action, name, inner);
+        return make_form(token, next_for_forms, action, name, inner);
     };
 
     std::string out = PAGE_HEAD;
 
     if (flash)
         out += std::format("<div class=\"toast {}\">{}</div>\n",
-                           flash->first ? "ok" : "err", html_escape(flash->second));
+                           flash->first ? "ok" : "err", esc_text(flash->second));
 
     out += render_header("home");
 
@@ -456,6 +526,7 @@ static std::string render_page(const std::filesystem::path& data_path,
         "<label class=\"fld\">Streak (daily / weekly / 3d)<input class=\"in\" name=\"streak\"></label>"
         "<label class=\"fld\">Unit (e.g. km)<input class=\"in\" name=\"unit\"></label>"
         "<label class=\"fld\">Target<input class=\"in\" name=\"target\"></label>"
+        "<label class=\"fld\">Tags (comma or space separated)<input class=\"in\" name=\"tags\"></label>"
         "<button class=\"btn primary\" type=\"submit\">Add habit</button></form></details>\n", tok);
     out += std::format(
         "<details><summary>+ New task</summary>"
@@ -465,91 +536,105 @@ static std::string render_page(const std::filesystem::path& data_path,
         "<label class=\"fld\">Name<input class=\"in\" name=\"name\" required></label>"
         "<label class=\"fld\">Unit (e.g. pages)<input class=\"in\" name=\"unit\"></label>"
         "<label class=\"fld\">Target<input class=\"in\" name=\"target\"></label>"
+        "<label class=\"fld\">Tags (comma or space separated)<input class=\"in\" name=\"tags\"></label>"
         "<button class=\"btn primary\" type=\"submit\">Add task</button></form></details>\n", tok);
     out += "</div>\n";
 
+    // Filter bar
+    out += render_filterbar(all_tags, filter_tags, filter_type);
+
     // Habits
-    out += "<div class=\"section-title\">Habits</div>\n";
-    if (habits.empty()) {
-        out += "<p class=\"empty\">No habits yet — add one above.</p>\n";
-    } else {
-        for (const auto& a : habits) {
-            bool od = overdue_names.contains(a.name);
+    if (show_habits) {
+        out += "<div class=\"section-title\">Habits</div>\n";
+        if (habits.empty()) {
+            out += std::format("<p class=\"empty\">{}</p>\n",
+                filter_tags.empty() ? "No habits yet — add one above."
+                                    : "No habits match the current filter.");
+        } else {
+            for (const auto& a : habits) {
+                bool od = overdue_names.contains(a.name);
 
-            std::string badges;
-            if (od) badges += "<span class=\"badge danger\">overdue</span>";
-            if (a.streak)
-                badges += std::format("<span class=\"badge streak\">🔥 {} · {}</span>",
-                                      compute_streak(a), format_streak_label(*a.streak));
-            if (a.alert_after)
-                badges += std::format("<span class=\"badge\">⏰ {}</span>", format_duration(*a.alert_after));
+                std::string badges;
+                if (od) badges += "<span class=\"badge danger\">overdue</span>";
+                if (a.streak)
+                    badges += std::format("<span class=\"badge streak\">🔥 {} · {}</span>",
+                                          compute_streak(a), format_streak_label(*a.streak));
+                if (a.alert_after)
+                    badges += std::format("<span class=\"badge\">⏰ {}</span>", format_duration(*a.alert_after));
 
-            std::string log_form = nform("/log", a.name,
-                "<input class=\"in sm\" name=\"amount\" placeholder=\"amt\">"
-                "<input class=\"in sm\" name=\"ago\" placeholder=\"ago\">"
-                "<button class=\"btn primary\">Log</button>");
-            std::string unlog_form = a.logs.size() > 1
-                ? nform("/unlog", a.name, "<button class=\"btn ghost\">Unlog</button>") : "";
+                std::string log_form = nform("/log", a.name,
+                    "<input class=\"in sm\" name=\"amount\" placeholder=\"amt\">"
+                    "<input class=\"in sm\" name=\"ago\" placeholder=\"ago\">"
+                    "<button class=\"btn primary\">Log</button>");
+                std::string unlog_form = a.logs.size() > 1
+                    ? nform("/unlog", a.name, "<button class=\"btn ghost\">Unlog</button>") : "";
 
-            out += std::format(
-                "<div class=\"entry{}\">"
-                "<div class=\"entry-head\"><div class=\"name\"><a href=\"{}\">{}</a></div><div class=\"badges\">{}</div></div>"
-                "<div class=\"timer{}\" data-since=\"{}\">{}</div>"
-                "<div class=\"sub\">last done {}</div>"
-                "{}"
-                "<div class=\"actions\">{}{}</div>"
-                "{}</div>\n",
-                od ? " over" : "",
-                activity_url(a.name), html_escape(a.name), badges,
-                od ? " over" : "", to_epoch(last_done(a)), format_elapsed(last_done(a)),
-                format_datetime(last_done(a)),
-                progress_bar(a),
-                log_form, unlog_form,
-                manage_controls(token, "", a, /*is_habit=*/true));
+                out += std::format(
+                    "<div class=\"entry{}\">"
+                    "<div class=\"entry-head\"><div class=\"name\"><a href=\"{}\">{}</a></div><div class=\"badges\">{}</div></div>"
+                    "<div class=\"timer{}\" data-since=\"{}\">{}</div>"
+                    "<div class=\"sub\">last done {}</div>"
+                    "{}{}"
+                    "<div class=\"actions\">{}{}</div>"
+                    "{}</div>\n",
+                    od ? " over" : "",
+                    activity_url(a.name), esc_text(a.name), badges,
+                    od ? " over" : "", to_epoch(last_done(a)), format_elapsed(last_done(a)),
+                    format_datetime(last_done(a)),
+                    webutil::render_tag_chips(a.tags),
+                    progress_bar(a),
+                    log_form, unlog_form,
+                    manage_controls(token, next_for_forms, a, /*is_habit=*/true));
+            }
         }
     }
 
     // Tasks
-    out += "<div class=\"section-title\">Tasks</div>\n";
-    if (tasks.empty()) {
-        out += "<p class=\"empty\">No tasks yet — add one above.</p>\n";
-    } else {
-        for (const auto& a : tasks) {
-            std::string badges, timer, sub;
-            if (a.completed_at) {
-                badges = "<span class=\"badge ok\">done</span>";
-                timer  = "<div class=\"timer done\">✓ completed</div>";
-                sub    = std::format("done {} · added {}",
-                    format_datetime(*a.completed_at), format_datetime(a.logs.front().when));
-            } else {
-                timer = std::format("<div class=\"timer\" data-since=\"{}\">{}</div>",
-                    to_epoch(a.logs.front().when), format_elapsed(a.logs.front().when));
-                sub = std::format("pending · added {}", format_datetime(a.logs.front().when));
-            }
+    if (show_tasks) {
+        out += "<div class=\"section-title\">Tasks</div>\n";
+        if (tasks.empty()) {
+            out += std::format("<p class=\"empty\">{}</p>\n",
+                filter_tags.empty() ? "No tasks yet — add one above."
+                                    : "No tasks match the current filter.");
+        } else {
+            for (const auto& a : tasks) {
+                std::string badges, timer, sub;
+                if (a.completed_at) {
+                    badges = "<span class=\"badge ok\">done</span>";
+                    timer  = "<div class=\"timer done\">✓ completed</div>";
+                    sub    = std::format("done {} · added {}",
+                        format_datetime(*a.completed_at), format_datetime(a.logs.front().when));
+                } else {
+                    timer = std::format("<div class=\"timer\" data-since=\"{}\">{}</div>",
+                        to_epoch(a.logs.front().when), format_elapsed(a.logs.front().when));
+                    sub = std::format("pending · added {}", format_datetime(a.logs.front().when));
+                }
 
-            std::string actions;
-            if (!a.completed_at) {
-                actions += nform("/done", a.name, "<button class=\"btn primary\">Mark done</button>");
-                actions += nform("/log", a.name,
-                    "<input class=\"in sm\" name=\"amount\" placeholder=\"amt\"><button class=\"btn ghost\">Log progress</button>");
-            }
-            if (a.logs.size() > 1)
-                actions += nform("/unlog", a.name, "<button class=\"btn ghost\">Unlog</button>");
+                std::string actions;
+                if (!a.completed_at) {
+                    actions += nform("/done", a.name, "<button class=\"btn primary\">Mark done</button>");
+                    actions += nform("/log", a.name,
+                        "<input class=\"in sm\" name=\"amount\" placeholder=\"amt\"><button class=\"btn ghost\">Log progress</button>");
+                }
+                if (a.logs.size() > 1)
+                    actions += nform("/unlog", a.name, "<button class=\"btn ghost\">Unlog</button>");
 
-            out += std::format(
-                "<div class=\"entry\">"
-                "<div class=\"entry-head\"><div class=\"name\"><a href=\"{}\">{}</a></div><div class=\"badges\">{}</div></div>"
-                "{}"
-                "<div class=\"sub\">{}</div>"
-                "{}"
-                "<div class=\"actions\">{}</div>"
-                "{}</div>\n",
-                activity_url(a.name), html_escape(a.name), badges,
-                timer,
-                html_escape(sub),
-                progress_bar(a),
-                actions,
-                manage_controls(token, "", a, /*is_habit=*/false));
+                out += std::format(
+                    "<div class=\"entry\">"
+                    "<div class=\"entry-head\"><div class=\"name\"><a href=\"{}\">{}</a></div><div class=\"badges\">{}</div></div>"
+                    "{}"
+                    "<div class=\"sub\">{}</div>"
+                    "{}{}"
+                    "<div class=\"actions\">{}</div>"
+                    "{}</div>\n",
+                    activity_url(a.name), esc_text(a.name), badges,
+                    timer,
+                    esc_text(sub),
+                    webutil::render_tag_chips(a.tags),
+                    progress_bar(a),
+                    actions,
+                    manage_controls(token, next_for_forms, a, /*is_habit=*/false));
+            }
         }
     }
 
@@ -621,7 +706,7 @@ static std::string render_stats_page(const std::filesystem::path& data_path) {
         auto hcard = [](const char* label, const std::string& name, const std::string& detail) {
             return std::format("<div class=\"hl\"><div class=\"hl-l\">{}</div>"
                 "<div class=\"hl-n\">{}</div><div class=\"hl-d\">{}</div></div>",
-                label, html_escape(name), html_escape(detail));
+                label, esc_text(name), esc_text(detail));
         };
         std::string hl;
         if (gs.most_consistent)
@@ -654,7 +739,7 @@ static std::string render_stats_page(const std::filesystem::path& data_path) {
             if (auto iv = avg_interval(a))
                 chips += std::format("<span class=\"chip\">every {}</span>", format_duration(*iv));
             if (auto qs = quantity_stats(a)) {
-                std::string u = a.unit ? " " + *a.unit : "";
+                std::string u = a.unit ? " " + esc_text(*a.unit) : "";
                 chips += std::format("<span class=\"chip\">{}{} total</span>", format_amount(qs->total), u);
                 double l = qs->last7, p = qs->prev7;
                 if (l > 0 || p > 0) {
@@ -664,8 +749,9 @@ static std::string render_stats_page(const std::filesystem::path& data_path) {
                         cls, arr, format_amount(l), u);
                 }
             }
-            out += std::format("<div class=\"hrow\"><div class=\"hname\"><a href=\"{}\">{}</a></div>"
-                "<div class=\"chips\">{}</div></div>", activity_url(a.name), html_escape(a.name), chips);
+            out += std::format("<div class=\"hrow\"><div class=\"hname\"><a href=\"{}\">{}</a>{}</div>"
+                "<div class=\"chips\">{}</div></div>", activity_url(a.name), esc_text(a.name),
+                webutil::render_tag_chips(a.tags), chips);
         }
         out += "</div>\n";
     }
@@ -680,8 +766,9 @@ static std::string render_stats_page(const std::filesystem::path& data_path) {
                     format_datetime(*a.completed_at))
                 : std::format("<span class=\"chip\">pending <span data-since=\"{}\">{}</span></span>",
                     to_epoch(a.logs.front().when), format_elapsed(a.logs.front().when));
-            out += std::format("<div class=\"hrow\"><div class=\"hname\"><a href=\"{}\">{}</a></div>"
-                "<div class=\"chips\">{}</div></div>", activity_url(a.name), html_escape(a.name), chip);
+            out += std::format("<div class=\"hrow\"><div class=\"hname\"><a href=\"{}\">{}</a>{}</div>"
+                "<div class=\"chips\">{}</div></div>", activity_url(a.name), esc_text(a.name),
+                webutil::render_tag_chips(a.tags), chip);
         }
         out += "</div>\n";
     }
@@ -757,8 +844,10 @@ static std::string render_heatmap(const Activity& a) {
                 tip += std::format(" · {} log{}", x.count, x.count > 1 ? "s" : "");
                 if (x.has_amount) tip += " · " + format_amount(x.amount) + unit;
             }
+            // `tip` embeds the user-supplied unit and lands in a title attribute,
+            // so it must be attribute-escaped to prevent breaking out of title="".
             cols += std::format("<div class=\"cal-cell{}\" title=\"{}\"></div>",
-                lv ? std::format(" l{}", lv) : "", tip);
+                lv ? std::format(" l{}", lv) : "", esc_attr(tip));
         }
         cols += "</div>";
     }
@@ -784,14 +873,14 @@ static std::string render_activity_page(const std::filesystem::path& data_path,
     std::string out = PAGE_HEAD;
     if (flash)
         out += std::format("<div class=\"toast {}\">{}</div>\n",
-                           flash->first ? "ok" : "err", html_escape(flash->second));
+                           flash->first ? "ok" : "err", esc_text(flash->second));
     out += render_header("");
 
     if (!found) {
         out += std::format(
             "<div class=\"detail-head\"><a class=\"back\" href=\"/\">← Dashboard</a></div>"
             "<p class=\"empty\">No activity named \"{}\". It may have been deleted.</p>\n",
-            html_escape(name));
+            esc_text(name));
         out += page_tail();
         return out;
     }
@@ -799,7 +888,8 @@ static std::string render_activity_page(const std::filesystem::path& data_path,
     const Activity& a = *found;
     const bool is_habit = a.type == ActivityType::Habit;
     const std::string self = activity_url(a.name);
-    const std::string unit = a.unit ? " " + *a.unit : "";
+    // Rendered into text nodes throughout this page, so pre-escape the unit once.
+    const std::string unit = a.unit ? " " + esc_text(*a.unit) : "";
 
     bool od = false;
     for (const auto& o : tracker.overdue_activities())
@@ -816,14 +906,14 @@ static std::string render_activity_page(const std::filesystem::path& data_path,
     if (!is_habit)
         badges += a.completed_at ? "<span class=\"badge ok\">done</span>"
                                  : "<span class=\"badge\">task</span>";
-    if (a.unit)   badges += std::format("<span class=\"badge\">unit: {}</span>", html_escape(*a.unit));
+    if (a.unit)   badges += std::format("<span class=\"badge\">unit: {}</span>", esc_text(*a.unit));
     if (a.target) badges += std::format("<span class=\"badge\">target: {}</span>", format_amount(*a.target));
 
     out += std::format(
         "<div class=\"detail-head\"><a class=\"back\" href=\"/\">← Dashboard</a>"
         "<div class=\"detail-title\">{}</div>"
         "<div class=\"badges\" style=\"justify-content:flex-start\">{}</div></div>\n",
-        html_escape(a.name), badges);
+        esc_text(a.name), badges);
 
     // Big live timer / status
     if (is_habit || !a.completed_at) {
@@ -894,12 +984,37 @@ static std::string render_activity_page(const std::filesystem::path& data_path,
             out += std::format(
                 "<div class=\"hrow\"><div class=\"hname\" style=\"font-weight:500\">{}</div>"
                 "<div class=\"chips\">{}</div></div>",
-                html_escape(format_datetime(it->when)), amt);
+                esc_text(format_datetime(it->when)), amt);
         }
         if (a.logs.size() > CAP)
             out += std::format("<div class=\"hl-d\" style=\"margin-top:.7rem\">… and {} earlier</div>",
                 a.logs.size() - CAP);
         out += "</div>\n";
+    }
+
+    // Tags — display, add, and remove, at parity with the CLI's tag/untag.
+    {
+        std::string chips;
+        for (const auto& t : a.tags) {
+            // Each chip carries an inline remove form; the tag value is placed in
+            // both a text node (the label) and an attribute (the hidden field).
+            chips += std::format(
+                "<span class=\"chip tag\"><a href=\"{}\" style=\"color:inherit;text-decoration:none\">#{}</a>"
+                "<form class=\"tagform\" method=\"post\" action=\"/untag\">{}{}{}"
+                "<input type=\"hidden\" name=\"tag\" value=\"{}\">"
+                "<button class=\"tag-remove\" title=\"Remove tag\">×</button></form></span>",
+                esc_attr(webutil::dashboard_url({t}, "")), esc_text(t),
+                hidden_input("token", token), hidden_input("name", a.name),
+                hidden_input("next", self), esc_attr(t));
+        }
+        if (chips.empty()) chips = "<span class=\"hl-d\">No tags yet.</span>";
+        out += "<div class=\"panel\"><div class=\"panel-title\">Tags</div>"
+               "<div class=\"taglist chips\" style=\"justify-content:flex-start\">" + chips + "</div>"
+               "<div class=\"actions\">"
+             + make_form(token, self, "/tag", a.name,
+                   "<input class=\"in sm\" name=\"tag\" placeholder=\"tag\">"
+                   "<button class=\"btn ghost\">Add tag</button>")
+             + "</div></div>\n";
     }
 
     // Actions — same controls as the dashboard, but they return here via `next`
@@ -933,10 +1048,11 @@ void run_web(const std::filesystem::path& data_path, int port) {
     std::mutex write_mtx; // serialize the load-modify-save in mutating handlers
 
     // Post/Redirect/Get: bounce back with a flash message. `next` lets a detail
-    // page return to itself; we only honour our own paths to avoid open redirects.
+    // page or a filtered dashboard return to itself; only same-origin rooted
+    // paths are honoured (is_safe_next) to avoid open redirects.
     auto finish = [](httplib::Response& res, bool ok, const std::string& msg,
                      const std::string& next) {
-        std::string base = (next == "/" || next.rfind("/activity?", 0) == 0) ? next : "/";
+        std::string base = webutil::is_safe_next(next) ? next : "/";
         char sep = base.find('?') == std::string::npos ? '?' : '&';
         res.status = 303;
         res.set_header("Location",
@@ -975,8 +1091,22 @@ void run_web(const std::filesystem::path& data_path, int port) {
         std::optional<Outcome> flash;
         if (req.has_param("ok"))  flash = Outcome{true,  req.get_param_value("ok")};
         else if (req.has_param("err")) flash = Outcome{false, req.get_param_value("err")};
+
+        // Active filters: any number of ?tag= values (normalized + de-duped like
+        // the CLI) plus an optional ?type=habit|task. Anything else is ignored.
+        std::vector<std::string> filter_tags;
+        for (size_t i = 0, n = req.get_param_value_count("tag"); i < n; ++i) {
+            std::string t = normalize_tag(req.get_param_value("tag", i));
+            if (!t.empty() && std::find(filter_tags.begin(), filter_tags.end(), t) == filter_tags.end())
+                filter_tags.push_back(t);
+        }
+        std::sort(filter_tags.begin(), filter_tags.end());
+        std::string filter_type = req.get_param_value("type");
+        if (filter_type != "habit" && filter_type != "task") filter_type.clear();
+
         try {
-            res.set_content(render_page(data_path, token, flash), "text/html; charset=utf-8");
+            res.set_content(render_page(data_path, token, flash, filter_tags, filter_type),
+                            "text/html; charset=utf-8");
         } catch (const std::exception& e) {
             res.status = 500;
             res.set_content(std::format("Error: {}", e.what()), "text/plain");
@@ -1019,8 +1149,10 @@ void run_web(const std::filesystem::path& data_path, int port) {
                 target = parse_amount(*v);
                 if (!target) return {false, "Invalid target — expected a non-negative number."};
             }
+            // Tags come from one free-form field; Tracker normalizes/de-dupes them.
+            std::vector<std::string> tags = webutil::split_tags(req.get_param_value("tags"));
             if (is_task)
-                return t.addtask(name, unit, target)
+                return t.addtask(name, unit, target, tags)
                     ? Outcome{true, "Added task \"" + name + "\"."}
                     : Outcome{false, "\"" + name + "\" already exists."};
 
@@ -1034,7 +1166,7 @@ void run_web(const std::filesystem::path& data_path, int port) {
                 streak = parse_streak(*v);
                 if (!streak) return {false, "Invalid streak — try daily, weekly, monthly, 3d."};
             }
-            return t.add(name, alarm, streak, unit, target)
+            return t.add(name, alarm, streak, unit, target, tags)
                 ? Outcome{true, "Now tracking \"" + name + "\"."}
                 : Outcome{false, "\"" + name + "\" is already tracked."};
         });
@@ -1182,6 +1314,35 @@ void run_web(const std::filesystem::path& data_path, int port) {
             return t.deltarget(name)
                 ? Outcome{true, "Target removed for \"" + name + "\"."}
                 : Outcome{false, "\"" + name + "\" not found."};
+        });
+    });
+
+    // Tag parity with the CLI: addtag/deltag do all normalization + de-duping,
+    // so the handlers just forward the raw value and report the outcome.
+    svr.Post("/tag", [&](const httplib::Request& req, httplib::Response& res) {
+        if (!guard(req, res)) return;
+        run(req, res, [&](Tracker& t) -> Outcome {
+            std::string name = req.get_param_value("name");
+            auto v = opt_field(req, "tag");
+            if (!v) return {false, "Enter a tag."};
+            std::string norm = normalize_tag(*v);
+            if (norm.empty()) return {false, "Enter a non-empty tag."};
+            return t.addtag(name, *v)
+                ? Outcome{true, std::format("Tagged \"{}\" with #{}.", name, norm)}
+                : Outcome{false, "\"" + name + "\" not found."};
+        });
+    });
+
+    svr.Post("/untag", [&](const httplib::Request& req, httplib::Response& res) {
+        if (!guard(req, res)) return;
+        run(req, res, [&](Tracker& t) -> Outcome {
+            std::string name = req.get_param_value("name");
+            auto v = opt_field(req, "tag");
+            if (!v) return {false, "Enter a tag."};
+            std::string norm = normalize_tag(*v);
+            return t.deltag(name, *v)
+                ? Outcome{true, std::format("Removed tag #{} from \"{}\".", norm, name)}
+                : Outcome{false, std::format("\"{}\" not found or not tagged #{}.", name, norm)};
         });
     });
 

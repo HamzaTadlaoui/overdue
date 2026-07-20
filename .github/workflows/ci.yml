@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # The project targets C++23 (std::print, chrono time zones), so use a
+      # compiler new enough for it. GCC 14 ships in the 24.04 runner image.
+      - name: Install GCC 14
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++-14 cmake
+
+      - name: Configure
+        env:
+          CC: gcc-14
+          CXX: g++-14
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  sanitizers:
+    # AddressSanitizer + UBSan run of the test suite. Kept in a separate job so a
+    # sanitizer-only failure is easy to spot, and because it needs the runtime
+    # libraries the 24.04 image ships with GCC 14.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install GCC 14
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++-14 cmake
+      - name: Configure (sanitizers)
+        env:
+          CC: gcc-14
+          CXX: g++-14
+        run: cmake -S . -B build-san -DCMAKE_BUILD_TYPE=Debug -DOVERDUE_SANITIZE=ON
+      - name: Build
+        run: cmake --build build-san --parallel
+      - name: Test
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          ASAN_OPTIONS: detect_leaks=1
+        run: ctest --test-dir build-san --output-on-failure

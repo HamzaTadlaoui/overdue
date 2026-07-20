@@ -91,9 +91,13 @@ Activity names can be multi-word without quotes: `overdue add brush teeth`
 **every action the CLI has** — no terminal needed:
 
 - summary cards: habits, total logs, tasks done, overdue
-- add habits or tasks (with optional unit, target, alarm, streak)
+- add habits or tasks (with optional unit, target, alarm, streak, and **tags**)
 - per-entry buttons: log (with optional amount and "ago"), unlog, mark task done, delete
 - per-entry **Manage** panel: set/remove alarm, streak, unit, and target
+- **tags** shown as chips on every card and detail page; add or remove a tag on the detail
+  page, and click any tag (or use the filter bar) to narrow the dashboard
+- a **filter bar** to slice the dashboard by type (habits / tasks) and by one or more tags
+  (match-any), combinable and preserved across refreshes and after actions
 - **live-ticking "since last done" timers** (updated every second in the browser), progress
   bars toward targets, streak/alarm badges, and overdue cards highlighted in red
 - a **Stats** tab with a 14-day activity chart, global highlights (most consistent / neglected /
@@ -101,10 +105,12 @@ Activity names can be multi-word without quotes: `overdue add brush teeth`
   trend), and a task summary
 - click any entry name for a **detail page**: a GitHub-style calendar heatmap (last 26 weeks),
   key stat cards, a quantity breakdown (total, avg/log, avg/day, best day, max, 7-day trend),
-  the full log history, and the same log/manage controls inline
+  the full log history, a tag panel, and the same log/manage controls inline
 
 The page also refreshes its data every 30 seconds, pausing automatically while you're typing
-in a field or have a panel open so it never interrupts you.
+in a field or have a panel open so it never interrupts you. The refresh keeps your current
+view — the open activity, and any active tag/type filters — instead of bouncing back to the
+top-level dashboard.
 
 ```bash
 overdue web              # serve on http://127.0.0.1:8080 and open the browser
@@ -116,8 +122,15 @@ sync. Press `Ctrl+C` to stop the server.
 
 **Safety:** the server binds to loopback (`127.0.0.1`) only, so it is never exposed on the
 network. Each session also mints a random token that every form must include, which stops
-other sites open in your browser from driving the dashboard behind your back. Concurrent
-edits are serialized so two quick actions can't clobber each other.
+other sites open in your browser from driving the dashboard behind your back. Every value you
+enter (names, units, tags, and flash messages) is escaped for the exact spot it lands in —
+text, attribute, or URL — so it always renders as data, never markup.
+
+Concurrent edits are safe across processes, not just browser tabs: every write takes an
+advisory lock on the data file and carries a revision number, so a CLI command and the
+dashboard (or two dashboards) can't silently clobber each other. If another process changed
+the data after you loaded a page, the save is refused with a conflict message instead of
+overwriting the newer data — reload and retry.
 
 ### Undoing an unlog
 
@@ -186,7 +199,10 @@ overdue untag reading learning      # remove it
 ```
 
 Tags are stored lowercased, trimmed, de-duplicated and sorted, so `Work`, ` work ` and
-`work` are the same tag. They show up as a column in `list` and on the `show` page.
+`work` are the same tag. They show up as a column in `list`, on the `show` page, and on the
+web dashboard — where you can also add or remove tags and filter by them (see [Web
+dashboard](#web-dashboard)). The web dashboard applies the same normalization, so tags stay
+consistent no matter which interface you use.
 
 `list` accepts filters that combine freely:
 
@@ -312,6 +328,8 @@ so switching profiles switches both settings and data together.
 ## Data
 
 All logs are stored in `data.json` inside `data-dir` (default `~/.local/share/overdue/`, honoring `$XDG_DATA_HOME`), written atomically (temp file + rename) so a crash can't corrupt it. Every log entry is preserved — full history, never overwritten — which is what powers streaks and stats. Each log is `{ "t": <unix>, "q": <amount?> }`; older files that stored bare timestamps are upgraded automatically on the next write. Unlogged-but-not-yet-purged entries are kept in a per-activity `"unlogged"` array (each carrying its original log plus the unlog time) until their grace period elapses.
+
+The file is a small JSON envelope — `{ "version": 2, "revision": <n>, "activities": [ … ] }` — where `revision` is a counter bumped on every write and used to detect a stale save (see the concurrency note under [Web dashboard](#web-dashboard)). The per-activity shape is unchanged, and older files are still read: a bare top-level array (the original format) or a single activity object loads fine and is upgraded to the envelope on the next write. A write is serialized with an advisory lock on `data.json.lock` (created alongside the data file). A file that fails to parse is left untouched rather than overwritten, so a recoverable problem never becomes data loss.
 
 ---
 

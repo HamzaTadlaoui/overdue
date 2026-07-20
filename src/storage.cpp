@@ -1,10 +1,21 @@
 #include "storage.hpp"
+#include "filelock.hpp"
 #include <nlohmann/json.hpp>
 #include <fstream>
 #include <print>
 #include <stdexcept>
 
 using json = nlohmann::json;
+
+// On-disk format (version 2): a JSON envelope
+//   { "version": 2, "revision": <n>, "activities": [ <activity>, ... ] }
+// The per-activity object shape is unchanged from earlier versions, so only the
+// wrapper is new. Two legacy shapes are still accepted on load:
+//   * a bare array of activities (the original format), and
+//   * a single activity object,
+// both of which carry no revision and so load as revision 0 and are upgraded to
+// the envelope on the next save.
+static constexpr int FORMAT_VERSION = 2;
 
 static std::chrono::system_clock::time_point from_unix(long long t) {
     return std::chrono::system_clock::time_point{std::chrono::seconds{t}};
@@ -63,32 +74,61 @@ static std::optional<LogEntry> read_log_entry(const json& l) {
     return std::nullopt;
 }
 
-std::vector<Activity> Storage::load(const std::filesystem::path& path) {
-    if (!std::filesystem::exists(path)) return {};
-
+// Parse the file at `path` into a JSON document, throwing a clear error (rather
+// than returning empty) on unparseable content so the caller's atomic save can
+// never overwrite a merely-corrupt file and cause total data loss.
+static json parse_file(const std::filesystem::path& path) {
     std::ifstream f(path);
     if (!f) throw std::runtime_error("Cannot open " + path.string());
-
-    // Parse without exceptions so a syntactically broken file does not crash the
-    // program. If the whole document is unrecoverable we deliberately throw
-    // rather than returning {}: the caller's atomic save would otherwise
-    // overwrite the original file and turn a recoverable corruption into total
-    // data loss. The bad file is left untouched for manual inspection.
     json root = json::parse(f, nullptr, /*allow_exceptions=*/false);
     if (root.is_discarded())
         throw std::runtime_error(
             "Cannot parse " + path.string() +
             " — the file is not valid JSON and was left unchanged. "
             "Fix or remove it to continue.");
+    return root;
+}
 
-    // A single object (rather than an array of them) is tolerated by wrapping it.
-    if (root.is_object()) root = json::array({root});
-    if (!root.is_array()) return {};
+// Split a parsed document into (revision, activities-array), understanding both
+// the v2 envelope and the two legacy shapes. `holder` backs the returned view
+// when a single object has to be wrapped into an array.
+static void split_document(const json& root, long long& revision,
+                           const json*& activities, json& holder) {
+    if (root.is_object() && root.contains("activities") &&
+        root["activities"].is_array()) {
+        // v2 envelope.
+        revision = read_field(root, "revision", read_ll).value_or(0);
+        activities = &root["activities"];
+    } else if (root.is_array()) {
+        // Legacy: bare array of activities.
+        revision = 0;
+        activities = &root;
+    } else if (root.is_object()) {
+        // Legacy: a single activity object — wrap it.
+        revision = 0;
+        holder = json::array({root});
+        activities = &holder;
+    } else {
+        revision = 0;
+        holder = json::array();
+        activities = &holder;
+    }
+}
 
-    std::vector<Activity> result;
+DataFile Storage::load(const std::filesystem::path& path) {
+    if (!std::filesystem::exists(path)) return {};
+
+    json root = parse_file(path);
+    long long revision = 0;
+    const json* items = nullptr;
+    json holder;
+    split_document(root, revision, items, holder);
+
+    DataFile out;
+    out.revision = revision;
     int skipped_activities = 0;
     int skipped_logs = 0;
-    for (const auto& item : root) {
+    for (const auto& item : *items) {
         if (!item.is_object()) { ++skipped_activities; continue; }
 
         Activity a;
@@ -152,7 +192,7 @@ std::vector<Activity> Storage::load(const std::filesystem::path& path) {
                 a.streak = StreakConfig{StreakMode::Calendar, 0, cu};
             }
         }
-        result.push_back(std::move(a));
+        out.activities.push_back(std::move(a));
     }
 
     if (skipped_activities > 0 || skipped_logs > 0)
@@ -163,13 +203,34 @@ std::vector<Activity> Storage::load(const std::filesystem::path& path) {
             skipped_activities == 1 ? "y" : "ies",
             skipped_logs, skipped_logs == 1 ? "y" : "ies");
 
-    return result;
+    return out;
 }
 
-void Storage::save(const std::filesystem::path& path, const std::vector<Activity>& activities) {
+long long Storage::current_revision(const std::filesystem::path& path) {
+    if (!std::filesystem::exists(path)) return 0;
+    json root = parse_file(path);
+    long long revision = 0;
+    const json* items = nullptr;
+    json holder;
+    split_document(root, revision, items, holder);
+    return revision;
+}
+
+long long Storage::save(const std::filesystem::path& path,
+                        const std::vector<Activity>& activities,
+                        long long base_revision) {
     std::filesystem::create_directories(path.parent_path());
 
-    json j = json::array();
+    // Hold the advisory lock for the whole check-and-write so no other process
+    // can slip a write between our revision check and our rename.
+    FileLock lock(FileLock::lock_path_for(path));
+
+    long long disk_revision = current_revision(path);
+    if (disk_revision != base_revision)
+        throw StaleWriteError(base_revision, disk_revision);
+    long long new_revision = base_revision + 1;
+
+    json items = json::array();
     for (const auto& a : activities) {
         json logs = json::array();
         for (const auto& e : a.logs) {
@@ -211,8 +272,14 @@ void Storage::save(const std::filesystem::path& path, const std::vector<Activity
                 entry["streak"] = {{"mode", "calendar"}, {"unit", unit}};
             }
         }
-        j.push_back(entry);
+        items.push_back(entry);
     }
+
+    json j = {
+        {"version", FORMAT_VERSION},
+        {"revision", new_revision},
+        {"activities", std::move(items)},
+    };
 
     auto tmp = path;
     tmp += ".tmp";
@@ -223,4 +290,5 @@ void Storage::save(const std::filesystem::path& path, const std::vector<Activity
         if (!f) throw std::runtime_error("Write failed: " + tmp.string());
     }
     std::filesystem::rename(tmp, path);
+    return new_revision;
 }

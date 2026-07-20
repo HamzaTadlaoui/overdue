@@ -42,9 +42,18 @@ std::vector<std::string> clean_tags(std::vector<std::string> tags) {
 } // namespace
 
 Tracker::Tracker(std::filesystem::path data_path, long long unlog_grace_secs)
-    : path_(std::move(data_path)), unlog_grace_secs_(unlog_grace_secs),
-      activities_(Storage::load(path_)) {
-    if (purge_expired()) save();
+    : path_(std::move(data_path)), unlog_grace_secs_(unlog_grace_secs) {
+    DataFile df = Storage::load(path_);
+    activities_ = std::move(df.activities);
+    revision_ = df.revision;
+    // Purging expired tombstones is an opportunistic cleanup that also runs on
+    // read-only paths (list/show/web render), so a concurrent write must not
+    // turn it into a hard error: on conflict, leave the tombstones for the next
+    // mutation to purge rather than failing the command or the page render.
+    if (purge_expired()) {
+        try { save(); }
+        catch (const StaleWriteError&) { /* another writer won; purge later */ }
+    }
 }
 
 bool Tracker::add(const std::string& name,
@@ -283,4 +292,4 @@ std::optional<Activity> Tracker::find(const std::string& name) const {
     return it != activities_.end() ? std::optional<Activity>{*it} : std::nullopt;
 }
 
-void Tracker::save() const { Storage::save(path_, activities_); }
+void Tracker::save() { revision_ = Storage::save(path_, activities_, revision_); }

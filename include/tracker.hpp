@@ -59,8 +59,13 @@ private:
     std::filesystem::path path_;
     long long unlog_grace_secs_;
     std::vector<Activity> activities_;
+    // Revision the in-memory state is based on; save() commits revision_+1 and
+    // fails with StaleWriteError if the on-disk revision has moved on since.
+    long long revision_ = 0;
 
     // Drop unlogged entries past the grace window. Returns true if any were purged.
     bool purge_expired();
-    void save() const;
+    // Commit activities_ at revision_+1 under the cross-process lock, advancing
+    // revision_. Throws StaleWriteError on a concurrent-write conflict.
+    void save();
 };
